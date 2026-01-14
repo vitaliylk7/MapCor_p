@@ -1,268 +1,331 @@
 # main.py
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-import webbrowser
+"""
+MAPCOR_M — Python-версия программы для расчёта ранговых корреляций
+(перенос с Delphi → PySide6 + pandas + numpy + scipy)
+
+Основные функции:
+- Загрузка данных (txt/csv/xlsx)
+- Выбор признаков через чек-лист (QListWidget с галочками)
+- Расчёт Spearman, DIST50, DIST10, RR (мета-корреляция)
+- Отображение исходных данных в QTableView
+- Таблица результатов в отдельном окне
+- Генерация и просмотр HTML-отчёта
+"""
+
+import sys
 import os
+from pathlib import Path
 import datetime
+import pandas as pd
+import numpy as np
+
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGroupBox, QListWidget, QListWidgetItem, QTableView,
+    QStatusBar, QMenuBar, QFileDialog, QMessageBox,
+    QHeaderView, QDialog, QLabel, QPushButton, QTextEdit
+)
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QStandardItemModel, QStandardItem, QDesktopServices, QFont
+
 from data import TData
 from stat_corr_types import TStatCorr
 from corr_calculations import calculate_all_correlations
 
-class FrmMain(tk.Tk):
+
+class ResultsDialog(QDialog):
+    """Диалоговое окно с таблицей результатов корреляций"""
+    def __init__(self, stat_corr, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Таблица результатов корреляций")
+        self.resize(1000, 700)
+        self.stat_corr = stat_corr
+
+        layout = QVBoxLayout(self)
+
+        self.table = QTableView()
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        layout.addWidget(self.table)
+
+        self._fill_table()
+
+    def _fill_table(self):
+        model = QStandardItemModel()
+        headers = ["Пара", "Spearman R", "DIST_50", "DIST_10", "RR (мета-корр)"]
+        model.setHorizontalHeaderLabels(headers)
+
+        for i in range(self.stat_corr.count()):
+            pair_name = self.stat_corr.get_pair_name(i)
+            r = self.stat_corr.get_corr(i)
+            d50 = self.stat_corr.get_dist50(i)
+            d10 = self.stat_corr.get_dist10(i)
+            rr = self.stat_corr.get_rr(i)
+
+            row = [
+                QStandardItem(pair_name),
+                QStandardItem(f"{r:.3f}" if not np.isnan(r) else "—"),
+                QStandardItem(f"{d50:.1f}" if not np.isnan(d50) else "—"),
+                QStandardItem(f"{d10:.1f}" if not np.isnan(d10) else "—"),
+                QStandardItem(f"{rr:.3f}" if not np.isnan(rr) else "—")
+            ]
+
+            model.appendRow(row)
+
+        self.table.setModel(model)
+
+
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title("MAPCOR_M")
-        self.geometry("1200x600")
+        self.setWindowTitle("MAPCOR_M — PySide6 версия")
+        self.resize(1280, 800)
+
         self.data = TData()
         self.stat_corr = TStatCorr()
 
-        # Группа для параметров (выбор признаков)
-        group1 = tk.LabelFrame(self, text="Параметры")
-        group1.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.BOTH, expand=True)
+        # Центральный виджет
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
 
-        self.ch_criterion = tk.Listbox(group1, selectmode=tk.MULTIPLE, height=20)
-        self.ch_criterion.pack(fill=tk.BOTH, expand=True)
+        # Левая панель — выбор признаков
+        left_group = QGroupBox("Выбор характеристик")
+        left_layout = QVBoxLayout(left_group)
+        self.check_list = QListWidget()
+        self.check_list.setAlternatingRowColors(True)
+        self.check_list.setSelectionMode(QListWidget.NoSelection)
+        left_layout.addWidget(self.check_list)
 
-        # Контекстное меню для чеклиста
-        self.pm_criterions = tk.Menu(self, tearoff=0)
-        self.pm_criterions.add_command(label="Отметить все", command=self.select_all)
-        self.pm_criterions.add_command(label="Снять все отметки", command=self.deselect_all)
-        self.pm_criterions.add_command(label="Инвертировать отметки", command=self.invert_selection)
-        self.ch_criterion.bind("<Button-3>", self.popup_menu)
+        main_layout.addWidget(left_group, 1)
 
-        # Группа для данных (таблица)
-        group2 = tk.LabelFrame(self, text="Исходные данные")
-        group2.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.BOTH, expand=True)
+        # Правая панель — исходные данные
+        right_group = QGroupBox("Исходные данные")
+        right_layout = QVBoxLayout(right_group)
+        self.table_view = QTableView()
+        self.table_view.setAlternatingRowColors(True)
+        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table_view.verticalHeader().setVisible(False)
+        right_layout.addWidget(self.table_view)
 
-        self.sg = ttk.Treeview(group2, show="headings")
-        self.sg.pack(fill=tk.BOTH, expand=True)
+        main_layout.addWidget(right_group, 3)
 
         # Статусбар
-        self.sb_main = tk.Label(self, text="", relief=tk.SUNKEN, anchor=tk.W)
-        self.sb_main.pack(side=tk.BOTTOM, fill=tk.X)
+        self.statusBar = QStatusBar()
+        self.setStatusBar(self.statusBar)
+        self.statusBar.showMessage("Готов к открытию файла...")
 
-        # Меню
-        menubar = tk.Menu(self)
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Открыть", command=self.act_open)
-        file_menu.add_command(label="Выход", command=self.quit)
-        menubar.add_cascade(label="Файл", menu=file_menu)
+        # Создаём меню
+        self._create_menu()
 
-        operation_menu = tk.Menu(menubar, tearoff=0)
-        operation_menu.add_command(label="Вычислить", command=self.act_run)
-        menubar.add_cascade(label="Операции", menu=operation_menu)
+    def _create_menu(self):
+        menubar = self.menuBar()
 
-        view_menu = tk.Menu(menubar, tearoff=0)
-        view_menu.add_command(label="Таблица", command=self.act_view_result)
-        view_menu.add_command(label="Отчет", command=self.act_view_report)
-        menubar.add_cascade(label="Результаты", menu=view_menu)
+        file_menu = menubar.addMenu("Файл")
+        file_menu.addAction("Открыть данные...", self.act_open, shortcut="Ctrl+O")
+        file_menu.addSeparator()
+        file_menu.addAction("Выход", self.close, shortcut="Alt+F4")
 
-        save_menu = tk.Menu(menubar, tearoff=0)
-        save_menu.add_command(label="Сохранить таблицу", command=self.act_save_result)
-        save_menu.add_command(label="Сохранить отчет", command=self.act_save_report)
-        menubar.add_cascade(label="Сохранить", menu=save_menu)
+        operation_menu = menubar.addMenu("Операции")
+        operation_menu.addAction("Вычислить корреляции", self.act_run, shortcut="F9")
 
-        self.config(menu=menubar)
+        view_menu = menubar.addMenu("Результаты")
+        view_menu.addAction("Таблица результатов", self.act_view_result)
+        view_menu.addAction("HTML-отчёт", self.act_view_report)
 
-    def popup_menu(self, event):
-        self.pm_criterions.post(event.x_root, event.y_root)
-
-    def select_all(self):
-        self.ch_criterion.selection_set(0, tk.END)
-
-    def deselect_all(self):
-        self.ch_criterion.selection_clear(0, tk.END)
-
-    def invert_selection(self):
-        selected = self.ch_criterion.curselection()
-        all_items = range(self.ch_criterion.size())
-        for i in all_items:
-            if i in selected:
-                self.ch_criterion.selection_clear(i)
-            else:
-                self.ch_criterion.selection_set(i)
+        save_menu = menubar.addMenu("Сохранить")
+        save_menu.addAction("Сохранить таблицу результатов...", self.act_save_result)
+        save_menu.addAction("Сохранить HTML-отчёт...", self.act_save_report)
 
     def act_open(self):
-        fname = filedialog.askopenfilename(filetypes=[("CSV/TXT files", "*.csv *.txt")])
+        fname, _ = QFileDialog.getOpenFileName(
+            self, "Открыть файл данных",
+            "",
+            "Данные (*.csv *.txt *.xlsx);;Все файлы (*.*)"
+        )
         if not fname:
             return
 
         self.stat_corr.clear()
-        # Очистка GUI
-        for item in self.sg.get_children():
-            self.sg.delete(item)
-        self.ch_criterion.delete(0, tk.END)
-        self.sb_main['text'] = "Загрузка файла..."
+        self.check_list.clear()
+        self.table_view.setModel(None)
 
-        if self.data.load_file(fname):
-            # Заполнение таблицы
-            columns = self.data.get_column_names()
-            self.sg["columns"] = columns
-            for col in columns:
-                self.sg.heading(col, text=col)
-            for i in range(self.data.get_count_record()):
-                row = [self.data.df.iloc[i][col] for col in columns]
-                self.sg.insert("", tk.END, values=row)
+        self.statusBar.showMessage("Загрузка файла... Подождите...")
 
-            # Заполнение чеклиста
-            for name in columns:
-                self.ch_criterion.insert(tk.END, name)
-            self.select_all()  # Все отмечены по умолчанию
+        success = self.data.load_file(fname)
 
-            self.sb_main['text'] = f"Файл: {os.path.basename(fname)}   n = {self.data.get_count_record()}"
-            # после загрузки, для invalid столбцов disable чекбоксы
-            for col_name in columns:
-                var = tk.IntVar(value=1)
-                self.check_vars[col_name] = var
-                chk = tk.Checkbutton(self.check_frame, text=col_name, variable=var, anchor="w", justify="left")
+        if success:
+            # Заполняем таблицу данных
+            model = QStandardItemModel()
+            model.setHorizontalHeaderLabels(self.data.get_column_names())
+
+            for row_idx in range(self.data.get_count_record()):
+                for col_idx, col_name in enumerate(self.data.get_column_names()):
+                    val = self.data.df.iloc[row_idx, col_idx]
+                    item = QStandardItem(f"{val:.4g}" if not pd.isna(val) else "—")
+                    item.setEditable(False)
+                    model.setItem(row_idx, col_idx, item)
+
+            self.table_view.setModel(model)
+
+            # Заполняем чек-лист
+            self.check_list.clear()
+            for col_name in self.data.get_column_names():
+                item = QListWidgetItem(col_name)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked)
+
                 col_idx = self.data.get_number_for_column_name(col_name)
                 if col_idx in self.data.invalid_columns:
-                    chk.config(state="disabled", text=f"{col_name} [invalid]")
-                    var.set(0)
-                chk.pack(fill=tk.X, padx=5, pady=1)
-                self.check_buttons[col_name] = chk
+                    item.setCheckState(Qt.Unchecked)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+                    item.setText(f"{col_name} [invalid]")
+
+                self.check_list.addItem(item)
+
+            self.statusBar.showMessage(
+                f"Файл загружен: {Path(fname).name}   •   строк: {self.data.get_count_record()}   •   признаков: {self.data.get_count_column()}"
+            )
+        else:
+            QMessageBox.warning(self, "Ошибка загрузки",
+                                "Не удалось загрузить файл.\nПодробности в data_load.log")
+            self.statusBar.showMessage("Ошибка загрузки файла")
 
     def act_run(self):
-        self.stat_corr.invalid_columns = self.data.invalid_columns.copy()
-        selected = self.ch_criterion.curselection()
-        if len(selected) < 2:
-            messagebox.showwarning("Ошибка", "Выберите хотя бы два признака")
-            return
+        selected_cols = []
+        for i in range(self.check_list.count()):
+            item = self.check_list.item(i)
+            if item.checkState() == Qt.Checked:
+                col_name = item.text().replace(" [invalid]", "")
+                col_idx = self.data.get_number_for_column_name(col_name)
+                if col_idx >= 0 and col_idx not in self.data.invalid_columns:
+                    selected_cols.append(col_idx)
 
-        selected_cols = list(selected)
+        if len(selected_cols) < 2:
+            QMessageBox.warning(self, "Недостаточно признаков",
+                                "Выберите хотя бы два валидных признака.")
+            return
 
         self.stat_corr.clear()
         self.stat_corr.initialize(self.data.get_column_names())
+        self.stat_corr.invalid_columns = self.data.invalid_columns.copy()
 
+        # Создаём все пары из выбранных столбцов
         for i in range(len(selected_cols) - 1):
             for j in range(i + 1, len(selected_cols)):
                 self.stat_corr.add_or_get_pair(selected_cols[i], selected_cols[j])
 
-        calculate_all_correlations(self.stat_corr, self.data.get_data, self.data.get_count_record(), 50, 10, False)
+        self.statusBar.showMessage("Расчёт корреляций...")
 
-        messagebox.showinfo("Готово", f"Рассчитано {self.stat_corr.count()} пар")
-        self.sb_main['text'] = f"Рассчитано {self.stat_corr.count()} пар признаков"
+        calculate_all_correlations(
+            self.stat_corr,
+            lambda col, rec: self.data.get_data(col, rec),
+            self.data.get_count_record(),
+            percent50=50,
+            percent10=10,
+            log_scale=False  # можно сделать параметр из GUI
+        )
+
+        QMessageBox.information(self, "Расчёт завершён",
+                                f"Рассчитано {self.stat_corr.count()} пар корреляций.")
+        self.statusBar.showMessage(f"Готово. Рассчитано {self.stat_corr.count()} пар.")
 
     def act_view_result(self):
-        # Показ таблицы результатов (аналог ViewResult)
-        result_win = tk.Toplevel(self)
-        result_win.title("Таблица результатов")
-        tree = ttk.Treeview(result_win, columns=("Pair", "Corr", "DIST50", "DIST10", "RR"))
-        tree.pack(fill=tk.BOTH, expand=True)
-        tree.heading("Pair", text="Pair")
-        tree.heading("Corr", text="Corr")
-        tree.heading("DIST50", text="DIST50")
-        tree.heading("DIST10", text="DIST10")
-        tree.heading("RR", text="RR")
+        if self.stat_corr.count() == 0:
+            QMessageBox.information(self, "Нет результатов",
+                                    "Сначала выполните расчёт (F9).")
+            return
+
+        dialog = ResultsDialog(self.stat_corr, self)
+        dialog.exec()
+
+    def act_view_report(self):
+        """Простая заглушка — можно расширить до полноценного HTML-отчёта"""
+        if self.stat_corr.count() == 0:
+            QMessageBox.information(self, "Нет результатов", "Сначала выполните расчёт.")
+            return
+
+        html_content = self._generate_simple_html_report()
+
+        report_path = Path("mapcor_report.html")
+        report_path.write_text(html_content, encoding="utf-8")
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path.absolute())))
+
+    def _generate_simple_html_report(self):
+        """Пример простого HTML-отчёта — можно сильно улучшить"""
+        lines = [
+            "<!DOCTYPE html>",
+            "<html lang='ru'>",
+            "<head><meta charset='UTF-8'>",
+            "<title>MAPCOR — Результаты</title>",
+            "<style>body{font-family:Segoe UI,Arial,sans-serif;margin:30px;}",
+            "table{border-collapse:collapse;width:100%;margin:20px 0;}",
+            "th,td{border:1px solid #ccc;padding:8px;text-align:center;}",
+            "th{background:#e6f2ff;}</style></head>",
+            "<body>",
+            f"<h2>Результаты MAPCOR — {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</h2>",
+            f"<p>Файл: {Path(self.data.filename).name}<br>",
+            f"Строк: {self.data.get_count_record()} • Признаков: {self.data.get_count_column()}</p>",
+            "<h3>Таблица корреляций</h3>",
+            "<table><tr><th>Пара</th><th>Spearman R</th><th>DIST50</th><th>DIST10</th><th>RR</th></tr>"
+        ]
 
         for i in range(self.stat_corr.count()):
-            pair_name = self.stat_corr.get_pair_name(i)
-            corr = self.stat_corr.get_corr(i)
+            pair = self.stat_corr.get_pair_name(i)
+            r = self.stat_corr.get_corr(i)
             d50 = self.stat_corr.get_dist50(i)
             d10 = self.stat_corr.get_dist10(i)
             rr = self.stat_corr.get_rr(i)
-            tree.insert("", tk.END, values=(pair_name, f"{corr:.3f}", f"{d50:.1f}", f"{d10:.1f}", f"{rr:.3f}"))
+            lines.append(f"<tr><td>{pair}</td>"
+                         f"<td>{r:.3f}</td><td>{d50:.1f}</td><td>{d10:.1f}</td><td>{rr:.3f}</td></tr>")
 
-    def act_view_report(self):
-        self.generate_extended_report()
+        lines.extend(["</table>", "</body></html>"])
+        return "\n".join(lines)
 
     def act_save_result(self):
-        fname = filedialog.asksaveasfilename(defaultextension=".csv")
+        if self.stat_corr.count() == 0:
+            QMessageBox.information(self, "Нет данных", "Нет результатов для сохранения.")
+            return
+
+        fname, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить таблицу результатов", "results.csv", "CSV (*.csv);;Все файлы (*.*)"
+        )
         if not fname:
             return
-        with open(fname, 'w') as f:
-            f.write("Pair,Corr,DIST50,DIST10,RR\n")
+
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write("Pair;SpearmanR;DIST50;DIST10;RR\n")
             for i in range(self.stat_corr.count()):
-                pair_name = self.stat_corr.get_pair_name(i)
-                corr = self.stat_corr.get_corr(i)
-                d50 = self.stat_corr.get_dist50(i)
-                d10 = self.stat_corr.get_dist10(i)
-                rr = self.stat_corr.get_rr(i)
-                f.write(f"{pair_name},{corr:.3f},{d50:.1f},{d10:.1f},{rr:.3f}\n")
+                f.write(f"{self.stat_corr.get_pair_name(i)};"
+                        f"{self.stat_corr.get_corr(i):.3f};"
+                        f"{self.stat_corr.get_dist50(i):.1f};"
+                        f"{self.stat_corr.get_dist10(i):.1f};"
+                        f"{self.stat_corr.get_rr(i):.3f}\n")
+
+        QMessageBox.information(self, "Сохранено", f"Таблица сохранена в {fname}")
 
     def act_save_report(self):
-        fname = filedialog.asksaveasfilename(defaultextension=".html")
+        fname, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить HTML-отчёт", "mapcor_report.html", "HTML (*.html);;Все файлы (*.*)"
+        )
         if not fname:
             return
-        html = self.generate_extended_report(save=True)
-        with open(fname, 'w', encoding='utf-8') as f:
-            f.write(html)
 
-    def generate_extended_report(self, save=False):
-        # Генерация HTML (аналог GenerateExtendedReport)
-        selected = self.ch_criterion.curselection()
-        if len(selected) < 2:
-            messagebox.showwarning("Ошибка", "Выберите хотя бы два признака")
-            return
+        html = self._generate_simple_html_report()
+        Path(fname).write_text(html, encoding="utf-8")
 
-        selected_indices = list(selected)
+        QMessageBox.information(self, "Сохранено", f"Отчёт сохранён в {fname}")
 
-        html_lines = [
-            '<!DOCTYPE html>',
-            '<html lang="ru">',
-            '<head><meta charset="UTF-8"><title>Отчёт MAPCOR</title>',
-            # Стили (скопировать из Delphi, упрощённо)
-            '<style>body {font-family: Arial;} table {border-collapse: collapse;} th, td {border: 1px solid black; padding: 5px;}</style>',
-            '</head><body>'
-        ]
-
-        html_lines.append(f"<h2>Расширенный отчёт</h2>")
-        html_lines.append(f"<p>Файл: {os.path.basename(self.data.get_file_name())}<br>Признаков: {len(selected_indices)}<br>Записей: {self.data.get_count_record()}<br>Дата: {datetime.datetime.now()}</p>")
-
-        # Для каждого признака
-        BLOCK_SIZE = 10  # Пример
-        for i, feature_idx in enumerate(selected_indices):
-            html_lines.append(f"<h3>{self.data.get_column_name(feature_idx)}</h3>")
-            fs = self.stat_corr.feature_stats[feature_idx]
-            html_lines.append(f"M(R) = {fs.avg_corr:.3f} • M(DIST10) = {fs.avg_dist10:.1f} • M(RR) = {fs.avg_rr:.3f}")
-
-            # Блоки таблиц
-            block_start = 0
-            while block_start < len(selected_indices):
-                block_end = min(block_start + BLOCK_SIZE, len(selected_indices) - 1)
-                html_lines.append(f"<table><tr><th></th>")
-                for j in range(block_start, block_end + 1):
-                    html_lines.append(f"<th>{self.data.get_column_name(selected_indices[j])}</th>")
-                html_lines.append("</tr>")
-
-                # R, DIST10, RR строки (аналогично Delphi, с цветами)
-                # ... (добавьте логику GetColorForCorr и т.д., упрощённо)
-                # Пример для R:
-                html_lines.append("<tr><td>R</td>")
-                for j in range(block_start, block_end + 1):
-                    other_idx = selected_indices[j]
-                    if feature_idx == other_idx:
-                        html_lines.append("<td>1.000</td>")
-                    else:
-                        pair_idx = self.stat_corr.get_pair_index(feature_idx, other_idx)
-                        if pair_idx >= 0:
-                            val = self.stat_corr.get_corr(pair_idx)
-                            color = "ffffff"  # Замените на GetColorForCorr
-                            html_lines.append(f'<td style="background:#{color}">{val:.3f}</td>')
-                        else:
-                            html_lines.append("<td>—</td>")
-                html_lines.append("</tr>")
-
-                # Аналогично для DIST10 и RR
-
-                html_lines.append("</table>")
-                block_start = block_end + 1
-
-        # Общая статистика
-        html_lines.append("<h2>Общая статистика</h2><table>")
-        # Добавьте строки для Corr, DIST10, RR из all_pairs_stat
-        html_lines.append("</table></body></html>")
-
-        html = "\n".join(html_lines)
-
-        if save:
-            return html
-
-        html_file = "report.html"
-        with open(html_file, 'w', encoding='utf-8') as f:
-            f.write(html)
-        webbrowser.open(html_file)
 
 if __name__ == "__main__":
-    app = FrmMain()
-    app.mainloop()
+    app = QApplication(sys.argv)
+
+    # Можно задать стиль оформления (опционально)
+    # app.setStyle("Fusion")           # или "Windows"
+    # app.setStyleSheet("...")         # тёмная тема и т.д.
+
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
