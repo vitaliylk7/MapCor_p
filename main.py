@@ -21,6 +21,7 @@ import numpy as np
 import tkinter as tk
 import json
 
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QTableView,
@@ -33,6 +34,7 @@ from PySide6.QtGui import QStandardItemModel, QStandardItem, QDesktopServices, Q
 from data import TData
 from stat_corr_types import TStatCorr, TExtendedStat
 from corr_calculations import calculate_all_correlations
+
 
 # ────────────────────────────────────────────────────────────────
 # Вспомогательные функции для цветовой кодировки (должны быть ДО классов!)
@@ -384,6 +386,10 @@ class MainWindow(QMainWindow):
         view_menu.addAction("HTML-отчёт расширенный", self.act_view_report_ext)
         view_menu.addAction("Таблица результатов", self.act_view_result)
 
+        # Новый раздел "Экспорт"
+        export_menu = menubar.addMenu("Экспорт")
+        export_menu.addAction("Экспорт расширенного отчёта в WORD", self.act_export_extended_report_to_word)
+        #export_menu.addAction("Экспорт отчёта в WORD", self.act_export_report_to_word)
 
         save_menu = menubar.addMenu("Сохранить")
         save_menu.addAction("Сохранить таблицу результатов...", self.act_save_result)
@@ -476,7 +482,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def act_view_report_old(self):
-        """Простая заглушка — можно расширить до полноценного HTML-отчёта"""
+        """Вариант отчета из старой версии"""
         if self.stat_corr.count() == 0:
             QMessageBox.information(self, "Нет результатов", "Сначала выполните расчёт.")
             return
@@ -487,9 +493,6 @@ class MainWindow(QMainWindow):
         report_path.write_text(html_content, encoding="utf-8")
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path.absolute())))
-
-
-
 
     def act_view_report_ext(self):
         if self.stat_corr.count() == 0:
@@ -504,6 +507,84 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path.absolute())))
 
         self.statusBar.showMessage("Расширенный отчёт открыт в браузере")
+
+    def act_export_extended_report_to_word(self):
+        """
+        Экспорт расширенного отчёта в .docx через html2docx (актуальный API 2025–2026)
+        """
+        if self.stat_corr.count() == 0:
+            QMessageBox.information(self, "Нет данных", "Сначала выполните расчёт.")
+            return
+
+        try:
+            html_content = self._generate_extended_report()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать HTML:\n{str(e)}")
+            return
+
+        fname, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить расширенный отчёт",
+            "MAPCOR_расширенный_отчёт.docx",
+            "Документы Word (*.docx);;Все файлы (*.*)"
+        )
+        if not fname:
+            return
+
+        if not fname.lower().endswith('.docx'):
+            fname += '.docx'
+
+        try:
+            from docx import Document
+            from html2docx import HTML2Docx
+
+            # Создаём пустой документ
+            doc = Document()
+
+            # Создаём конвертер
+            converter = HTML2Docx(
+                title="Расширенный отчёт MapCor",
+                add_default_css=True,
+                include_stylesheet=True
+            )
+
+            # Актуальный способ конвертации (для версий 1.2+)
+            converter.add_html(html_content)         # ← добавляем HTML
+            converter.build_document(doc)            # ← строим документ
+
+            # Сохраняем
+            doc.save(fname)
+
+            reply = QMessageBox.question(
+                self,
+                "Успешно сохранено",
+                f"Отчёт сохранён:\n{fname}\n\nОткрыть файл сейчас?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+
+            if reply == QMessageBox.Yes:
+                import os
+                os.startfile(fname)  # Windows
+
+        except ImportError:
+            QMessageBox.critical(
+                self,
+                "Библиотеки не установлены",
+                "Установите:\npip install python-docx html2docx --upgrade"
+            )
+        except AttributeError as e:
+            # Если API снова изменился — показываем подсказку обновления
+            QMessageBox.critical(
+                self,
+                "Несовместимая версия html2docx",
+                f"Ошибка: {str(e)}\n\n"
+                "Попробуйте обновить:\npip install html2docx --upgrade --force-reinstall\n"
+                "Или используйте Pandoc (см. инструкцию ниже)."
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка сохранения", str(e))
+
 
     def _generate_extended_report(self):
         """Генерация расширенного HTML-отчёта — версия с крупным названием и полусерым диагональным текстом"""
@@ -813,25 +894,45 @@ class MainWindow(QMainWindow):
 
     def act_save_result(self):
         if self.stat_corr.count() == 0:
-            QMessageBox.information(self, "Нет данных", "Нет результатов для сохранения.")
+            QMessageBox.information(self, "Нет данных", "Нет рассчитанных результатов для сохранения.")
             return
 
+        # Диалог сохранения — по умолчанию .txt
         fname, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить таблицу результатов", "results.csv", "CSV (*.csv);;Все файлы (*.*)"
+            self,
+            "Сохранить таблицу результатов",
+            "results.txt",
+            "Текстовые файлы (*.txt);;Все файлы (*.*)"
         )
         if not fname:
             return
 
-        with open(fname, "w", encoding="utf-8") as f:
-            f.write("Pair;SpearmanR;DIST10;RR\n")
-            for i in range(self.stat_corr.count()):
-                f.write(f"{self.stat_corr.get_pair_name(i)};"
-                        f"{self.stat_corr.get_corr(i):.3f};"
-                        f"{self.stat_corr.get_dist10(i):.1f};"
-                        f"{self.stat_corr.get_rr(i):.3f}\n")
+        # Добавляем расширение .txt, если пользователь его не указал
+        if not fname.lower().endswith('.txt'):
+            fname += '.txt'
 
-        QMessageBox.information(self, "Сохранено", f"Таблица сохранена в {fname}")
+        try:
+            with open(fname, "w", encoding="utf-8") as f:
+                # 1. Первая строка — количество признаков (столбцов)
+                f.write(f"3\n")
 
+                f.write("R\tDIST10\tRR\n")  # заголовок таблицы пар
+
+                for i in range(self.stat_corr.count()):
+                    r_value   = self.stat_corr.get_corr(i)
+                    dist10    = self.stat_corr.get_dist10(i)
+                    rr_value  = self.stat_corr.get_rr(i)
+
+                    line = f"{r_value:.3f}\t{dist10:.1f}\t{rr_value:.3f}"
+                    f.write(line + "\n")
+
+            QMessageBox.information(self, "Сохранено", f"Результаты сохранены в файл:\n{fname}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка сохранения",
+                                f"Не удалось сохранить файл:\n{str(e)}")
+            
+            
     def act_save_report(self):
         fname, _ = QFileDialog.getSaveFileName(
             self, "Сохранить HTML-отчёт", "mapcor_report.html", "HTML (*.html);;Все файлы (*.*)"
