@@ -1,55 +1,58 @@
 # corr_calculations.py
+"""
+Модуль расчёта корреляций Спирмена, DIST10 и RR (мета-корреляции).
+Все функции адаптированы под отсутствие log_scale — параметр удалён.
+"""
+
 import numpy as np
 from scipy.stats import spearmanr
 from stat_corr_types import TStatCorr, TColumnPair
 
-class TSpearmanDataSource:
-    def __init__(self, vec_a, vec_b):
-        self.vec_a = np.array(vec_a)
-        self.vec_b = np.array(vec_b)
-
-    def get_data(self, col, rec):
-        if rec < 0 or rec >= len(self.vec_a):
-            return 0.0
-        return self.vec_a[rec] if col == 0 else self.vec_b[rec]
-
 def rank_array(values):
-    # Ранжирование с обработкой ties (как в Delphi)
+    """
+    Ранжирование массива с обработкой связок (средний ранг).
+    Порог сравнения 1e-9 для учёта погрешности float (как в оригинале Delphi).
+    """
+    values = np.asarray(values)
     n = len(values)
     if n == 0:
         return np.array([])
 
     indices = np.argsort(values)
-    ranks = np.empty(n)
+    ranks = np.empty(n, dtype=float)
 
     i = 0
     while i < n:
         j = i
-        while j < n - 1 and np.abs(values[indices[j]] - values[indices[j + 1]]) < 1e-9:
+        while j < n - 1 and abs(values[indices[j]] - values[indices[j + 1]]) < 1e-9:
             j += 1
-        temp_rank = (i + j + 2) / 2.0  # Ранги с 1
+        temp_rank = (i + j + 2) / 2.0  # ранги начинаются с 1
         for k in range(i, j + 1):
             ranks[indices[k]] = temp_rank
         i = j + 1
 
     return ranks
 
-def spearman_corr(stat_corr: TStatCorr, col_a, col_b, get_data, num_records, log_scale):
-    if num_records < 2:
+
+def spearman_corr_manual(vals_a, vals_b):
+    """
+    Классическая формула Спирмена (как в Delphi).
+    Используется только в режиме совместимости.
+    """
+    ranks_a = rank_array(vals_a)
+    ranks_b = rank_array(vals_b)
+    sum_d2 = np.sum((ranks_a - ranks_b) ** 2)
+    n = len(vals_a)
+    denom = n * (n**2 - 1)
+    if denom == 0:
         return np.nan
+    return 1.0 - (6.0 * sum_d2) / denom
 
-    vals_a = np.array([get_data(col_a, i) for i in range(num_records)])
-    vals_b = np.array([get_data(col_b, i) for i in range(num_records)])
 
-    if log_scale:
-        vals_a = np.log10(np.clip(vals_a, 1e-10, None))
-        vals_b = np.log10(np.clip(vals_b, 1e-10, None))
-
-    # Используем scipy для Spearman (он обрабатывает ties автоматически)
-    corr, _ = spearmanr(vals_a, vals_b)
-    return corr
-
-def join_percent(stat_corr: TStatCorr, col_a, col_b, get_data, num_records, percent):
+def join_percent(stat_corr, col_a, col_b, get_data, num_records, percent):
+    """
+    Коэффициент пересечения топ-% значений (DIST10).
+    """
     if num_records < 2 or percent <= 0 or percent > 100:
         return 0.0
 
@@ -57,20 +60,23 @@ def join_percent(stat_corr: TStatCorr, col_a, col_b, get_data, num_records, perc
     if cnt_sel == 0:
         return 0.0
 
-    # Сортировка индексов по значениям (ascending)
     indices_a = np.argsort([get_data(col_a, i) for i in range(num_records)])
     indices_b = np.argsort([get_data(col_b, i) for i in range(num_records)])
 
-    # Топ cnt_sel (последние, т.к. ascending)
     top_a = set(indices_a[-cnt_sel:])
     top_b = set(indices_b[-cnt_sel:])
 
     cnt_11 = len(top_a.intersection(top_b))
-
     denominator = cnt_sel * 2 - cnt_11
+
     return (cnt_11 * 100.0 / denominator) if denominator != 0 else 0.0
 
-def calculate_rr_for_pair(stat_corr: TStatCorr, pair_idx, get_data, num_records, log_scale):
+
+def calculate_rr_for_pair(stat_corr, pair_idx, get_data, num_records):
+    """
+    Расчёт мета-корреляции RR для одной пары (Spearman между векторами корреляций).
+    log_scale удалён — всегда без логарифмирования.
+    """
     pair = stat_corr.get_pair(pair_idx)
     col_a, col_b = pair.col1, pair.col2
 
@@ -84,8 +90,8 @@ def calculate_rr_for_pair(stat_corr: TStatCorr, pair_idx, get_data, num_records,
     for i in range(num_features):
         if i == col_a or i == col_b:
             continue
-        idx_ac = stat_corr.get_pair_index(col_a, i)
-        idx_bc = stat_corr.get_pair_index(col_b, i)
+        idx_ac = stat_corr.get_pair_index(min(col_a, i), max(col_a, i))
+        idx_bc = stat_corr.get_pair_index(min(col_b, i), max(col_b, i))
         if idx_ac == -1 or idx_bc == -1:
             continue
         corr_vec_a.append(stat_corr.get_corr(idx_ac))
@@ -96,30 +102,51 @@ def calculate_rr_for_pair(stat_corr: TStatCorr, pair_idx, get_data, num_records,
         stat_corr.set_rr(pair_idx, 0.0)
         return
 
-    data_source = TSpearmanDataSource(corr_vec_a, corr_vec_b)
-    value = spearman_corr(stat_corr, 0, 1, data_source.get_data, common_count, False)
+    # Всегда без log_scale → используем scipy (или manual, если нужно)
+    value = spearmanr(corr_vec_a, corr_vec_b)[0]
     stat_corr.set_rr(pair_idx, value)
 
-def calculate_all_correlations(stat_corr: TStatCorr, get_data, num_records, percent50=50, percent10=10, log_scale=False):
-    # Пропускаем пары с invalid столбцами (проверяем перед расчётом)
+
+def calculate_all_correlations(
+    stat_corr: TStatCorr,
+    get_data,
+    num_records: int,
+    percent10: int = 10,
+    delphi_compatible: bool = False
+):
+    """
+    Основная функция расчёта всех корреляций.
+
+    Параметры:
+        delphi_compatible   — если True, использует собственную формулу Спирмена
+                              (максимально близко к старой Delphi-версии)
+                              если False — использует scipy.stats.spearmanr
+    """
+    # 1. Расчёт DIST10 (не зависит от режима)
     for i in range(stat_corr.count()):
         pair = stat_corr.get_pair(i)
-        if pair.col1 in stat_corr.invalid_columns or pair.col2 in stat_corr.invalid_columns:  # Добавьте invalid из TData
-            stat_corr.set_corr(i, np.nan)
-            stat_corr.set_dist50(i, np.nan)
-            stat_corr.set_dist10(i, np.nan)
-            continue
-    # 1. Расчёт Corr, Dist50, Dist10
-    for i in range(stat_corr.count()):
-        pair = stat_corr.get_pair(i)
-        stat_corr.set_corr(i, spearman_corr(stat_corr, pair.col1, pair.col2, get_data, num_records, log_scale))
-        stat_corr.set_dist50(i, join_percent(stat_corr, pair.col1, pair.col2, get_data, num_records, percent50))
         stat_corr.set_dist10(i, join_percent(stat_corr, pair.col1, pair.col2, get_data, num_records, percent10))
 
-    # 2. RR
+    # 2. Расчёт Spearman R
     for i in range(stat_corr.count()):
-        calculate_rr_for_pair(stat_corr, i, get_data, num_records, log_scale)
+        pair = stat_corr.get_pair(i)
+        col_a, col_b = pair.col1, pair.col2
 
-    # 3. Статистики
+        vals_a = np.array([get_data(col_a, rec) for rec in range(num_records)])
+        vals_b = np.array([get_data(col_b, rec) for rec in range(num_records)])
+
+        # Расчёт корреляции
+        if delphi_compatible:
+            corr = spearman_corr_manual(vals_a, vals_b)
+        else:
+            corr, _ = spearmanr(vals_a, vals_b, nan_policy='omit')
+
+        stat_corr.set_corr(i, corr)
+
+    # 3. Расчёт RR (мета-корреляция)
+    for i in range(stat_corr.count()):
+        calculate_rr_for_pair(stat_corr, i, get_data, num_records)
+
+    # 4. Обновление всех статистик
     stat_corr.update_all_statistics()
     stat_corr.update_feature_statistics()

@@ -29,7 +29,6 @@ class TFeatureStat:
     feature_idx: int = 0
     pair_count: int = 0
     avg_corr: float = 0.0
-    avg_dist50: float = 0.0
     avg_dist10: float = 0.0
     avg_rr: float = 0.0
 
@@ -39,14 +38,12 @@ class TStatCorr:
         self.pairs = []
         self.pair_names = []
         self.corr = []
-        self.dist50 = []
         self.dist10 = []
         self.rr = []
         self.reserve1 = []  # Зарезервировано
         self.reserve2 = []  # Зарезервировано
         self.all_pairs_stat = {
             'corr': TExtendedStat(),
-            'dist50': TExtendedStat(),
             'dist10': TExtendedStat(),
             'rr': TExtendedStat()
         }
@@ -61,7 +58,6 @@ class TStatCorr:
         self.pairs = []
         self.pair_names = []
         self.corr = []
-        self.dist50 = []
         self.dist10 = []
         self.rr = []
         self.reserve1 = []
@@ -69,7 +65,6 @@ class TStatCorr:
         self.feature_stats = []
         self.all_pairs_stat = {
             'corr': TExtendedStat(),
-            'dist50': TExtendedStat(),
             'dist10': TExtendedStat(),
             'rr': TExtendedStat()
         }
@@ -89,7 +84,6 @@ class TStatCorr:
         self.pairs.append(p)
         self.pair_names.append(self.generate_pair_name(p.col1, p.col2))
         self.corr.append(0.0)
-        self.dist50.append(0.0)
         self.dist10.append(0.0)
         self.rr.append(0.0)
         self.reserve1.append(0.0)
@@ -111,10 +105,6 @@ class TStatCorr:
         if 0 <= index < len(self.corr):
             self.corr[index] = value
 
-    def set_dist50(self, index, value):
-        if 0 <= index < len(self.dist50):
-            self.dist50[index] = value
-
     def set_dist10(self, index, value):
         if 0 <= index < len(self.dist10):
             self.dist10[index] = value
@@ -135,9 +125,6 @@ class TStatCorr:
     def get_corr(self, index):
         return self.corr[index] if 0 <= index < len(self.corr) else 0.0
 
-    def get_dist50(self, index):
-        return self.dist50[index] if 0 <= index < len(self.dist50) else 0.0
-
     def get_dist10(self, index):
         return self.dist10[index] if 0 <= index < len(self.dist10) else 0.0
 
@@ -154,12 +141,10 @@ class TStatCorr:
 
         # Векторизация с Numpy
         corr_arr = np.array(self.corr)
-        dist50_arr = np.array(self.dist50)
         dist10_arr = np.array(self.dist10)
         rr_arr = np.array(self.rr)
 
         self.all_pairs_stat['corr'] = TExtendedStat(corr_arr.min(), corr_arr.max(), corr_arr.mean(), corr_arr.std())
-        self.all_pairs_stat['dist50'] = TExtendedStat(dist50_arr.min(), dist50_arr.max(), dist50_arr.mean(), dist50_arr.std())
         self.all_pairs_stat['dist10'] = TExtendedStat(dist10_arr.min(), dist10_arr.max(), dist10_arr.mean(), dist10_arr.std())
         self.all_pairs_stat['rr'] = TExtendedStat(rr_arr.min(), rr_arr.max(), rr_arr.mean(), rr_arr.std())
 
@@ -168,7 +153,7 @@ class TStatCorr:
         if n_features == 0:
             return
 
-        sums = [{'sum_corr': 0.0, 'sum_d50': 0.0, 'sum_d10': 0.0, 'sum_rr': 0.0, 'count': 0} for _ in range(n_features)]
+        sums = [{'sum_corr': 0.0, 'sum_d10': 0.0, 'sum_rr': 0.0, 'count': 0} for _ in range(n_features)]
 
         for i in range(self.count()):
             col1 = self.pairs[i].col1
@@ -176,14 +161,12 @@ class TStatCorr:
 
             # Для col1
             sums[col1]['sum_corr'] += self.corr[i]
-            sums[col1]['sum_d50'] += self.dist50[i]
             sums[col1]['sum_d10'] += self.dist10[i]
             sums[col1]['sum_rr'] += self.rr[i]
             sums[col1]['count'] += 1
 
             # Для col2
             sums[col2]['sum_corr'] += self.corr[i]
-            sums[col2]['sum_d50'] += self.dist50[i]
             sums[col2]['sum_d10'] += self.dist10[i]
             sums[col2]['sum_rr'] += self.rr[i]
             sums[col2]['count'] += 1
@@ -195,7 +178,6 @@ class TStatCorr:
             fs = TFeatureStat(i, count)
             if count > 0:
                 fs.avg_corr = s['sum_corr'] / count
-                fs.avg_dist50 = s['sum_d50'] / count
                 fs.avg_dist10 = s['sum_d10'] / count
                 fs.avg_rr = s['sum_rr'] / count
             self.feature_stats.append(fs)

@@ -43,7 +43,7 @@ class TData:
 
             if ext == '.xlsx':
                 # Excel-поддержка
-                self.df = pd.read_excel(fname, engine='openpyxl', dtype='float32', header=0)
+                self.df = pd.read_excel(fname, engine='openpyxl', dtype='float64', header=0)
                 logging.info(f"Загружен Excel файл: {fname}, строк: {len(self.df)}, столбцов: {len(self.df.columns)}")
             else:
                 # Текстовый файл (CSV/TXT)
@@ -113,7 +113,7 @@ class TData:
                 if not data:
                     raise ValueError("Нет корректных строк данных")
 
-                self.df = pd.DataFrame(data, columns=column_names[:len(data[0])], dtype='float32')
+                self.df = pd.DataFrame(data, columns=column_names[:len(data[0])], dtype='float64')
 
             # Проверка на большие данные
             num_rows, num_cols = self.df.shape
