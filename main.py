@@ -20,7 +20,7 @@ import pandas as pd
 import numpy as np
 import tkinter as tk
 import json
-
+import subprocess
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -509,82 +509,81 @@ class MainWindow(QMainWindow):
         self.statusBar.showMessage("Расширенный отчёт открыт в браузере")
 
     def act_export_extended_report_to_word(self):
-        """
-        Экспорт расширенного отчёта в .docx через html2docx (актуальный API 2025–2026)
-        """
-        if self.stat_corr.count() == 0:
-            QMessageBox.information(self, "Нет данных", "Сначала выполните расчёт.")
-            return
-
+        html_content = self._generate_extended_report()
+        
+        # Модифицируем HTML для лучшей совместимости с Pandoc
+        html_content = self._prepare_html_for_pandoc(html_content)
+        
+        fname, _ = QFileDialog.getSaveFileName(self, "Сохранить", "report.docx", "Word (*.docx)")
+        if not fname: return
+        if not fname.endswith('.docx'): fname += '.docx'
+        
+        temp_html = "temp_report.html"
+        with open(temp_html, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        
         try:
-            html_content = self._generate_extended_report()
+            subprocess.run([
+                "pandoc",
+                temp_html,
+                "-o", fname,
+                "--from=html+raw_html",
+                "--to=docx",
+                "--standalone"
+            ], check=True)
+            
+            os.remove(temp_html)
+            QMessageBox.information(self, "Успех", f"Сохранено:\n{fname}")
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось создать HTML:\n{str(e)}")
-            return
+            QMessageBox.critical(self, "Ошибка", f"Pandoc не запустился:\n{e}\nУбедитесь, что Pandoc установлен.")
 
-        fname, _ = QFileDialog.getSaveFileName(
-            self,
-            "Сохранить расширенный отчёт",
-            "MAPCOR_расширенный_отчёт.docx",
-            "Документы Word (*.docx);;Все файлы (*.*)"
-        )
-        if not fname:
-            return
-
-        if not fname.lower().endswith('.docx'):
-            fname += '.docx'
-
-        try:
-            from docx import Document
-            from html2docx import HTML2Docx
-
-            # Создаём пустой документ
-            doc = Document()
-
-            # Создаём конвертер
-            converter = HTML2Docx(
-                title="Расширенный отчёт MapCor",
-                add_default_css=True,
-                include_stylesheet=True
-            )
-
-            # Актуальный способ конвертации (для версий 1.2+)
-            converter.add_html(html_content)         # ← добавляем HTML
-            converter.build_document(doc)            # ← строим документ
-
-            # Сохраняем
-            doc.save(fname)
-
-            reply = QMessageBox.question(
-                self,
-                "Успешно сохранено",
-                f"Отчёт сохранён:\n{fname}\n\nОткрыть файл сейчас?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
-            )
-
-            if reply == QMessageBox.Yes:
-                import os
-                os.startfile(fname)  # Windows
-
-        except ImportError:
-            QMessageBox.critical(
-                self,
-                "Библиотеки не установлены",
-                "Установите:\npip install python-docx html2docx --upgrade"
-            )
-        except AttributeError as e:
-            # Если API снова изменился — показываем подсказку обновления
-            QMessageBox.critical(
-                self,
-                "Несовместимая версия html2docx",
-                f"Ошибка: {str(e)}\n\n"
-                "Попробуйте обновить:\npip install html2docx --upgrade --force-reinstall\n"
-                "Или используйте Pandoc (см. инструкцию ниже)."
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка сохранения", str(e))
-
+    def _prepare_html_for_pandoc(self, html_content):
+        """
+        Более агрессивный подход: заменяем стили на старые HTML-атрибуты
+        """
+        import re
+        from bs4 import BeautifulSoup
+        
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Обрабатываем все ячейки с цветным фоном
+        for cell in soup.find_all(['td', 'th']):
+            # Проверяем inline style
+            if cell.has_attr('style'):
+                style = cell['style']
+                
+                # Извлекаем hex-цвет
+                match = re.search(r'background(?:-color)?:\s*#([0-9a-fA-F]{6})', style)
+                if match:
+                    hex_color = match.group(1)
+                    
+                    # Конвертируем в RGB для Word
+                    r = int(hex_color[0:2], 16)
+                    g = int(hex_color[2:4], 16)
+                    b = int(hex_color[4:6], 16)
+                    
+                    # Используем bgcolor (старый HTML атрибут, который Pandoc понимает лучше)
+                    cell['bgcolor'] = f"#{hex_color}"
+                    
+                    # Также оборачиваем содержимое в span с цветом
+                    content = cell.decode_contents()
+                    cell.clear()
+                    new_span = soup.new_tag('span', style=f'background-color:#{hex_color};display:block;padding:2px;')
+                    new_span.append(BeautifulSoup(content, 'html.parser'))
+                    cell.append(new_span)
+            
+            # Обрабатываем классы
+            if cell.has_attr('class'):
+                classes = cell['class']
+                
+                if 'diag' in classes:
+                    cell['bgcolor'] = '#e8e8e8'
+                elif 'diag-header' in classes:
+                    cell['bgcolor'] = '#b3e0ff'
+                elif 'row-header' in classes:
+                    cell['bgcolor'] = '#f0f4ff'
+        
+        return str(soup)
 
     def _generate_extended_report(self):
         """Генерация расширенного HTML-отчёта — версия с крупным названием и полусерым диагональным текстом"""
@@ -619,7 +618,7 @@ class MainWindow(QMainWindow):
             "    .feature-caption .name {font-size: 2.4em; font-weight: bold; color: #0f2a6e; letter-spacing: -0.5px;}",
             "    .feature-caption .stats {font-size: 1.05em; font-weight: bold; color: #555; margin-left: 28px;}",
             "    table {border-collapse: collapse; margin: 0 auto 2.4em auto; width: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.07);}",
-            "    th, td {border: 1px solid #d0d0d0; padding: 11px 15px; text-align: center; font-size: 1.1em;}",
+            "    th, td {border: 1px solid #d0d0d0; padding: 11px 15px; text-align: center; font-size: 1.1em;;-webkit-print-color-adjust: exact; color-adjust: exact;}",
             "    th {background: #e8f0ff; color: #1e3a8a; font-weight: 600;}",
             "    td {font-weight: bold;}",
             "    .diag-header {",
@@ -638,7 +637,7 @@ class MainWindow(QMainWindow):
             "    }",
             "    .na {color: #888; font-style: italic; font-weight: normal;}",
             "    .row-header {background: #f0f4ff; font-weight: bold; text-align: left; min-width: 150px;}",
-            "    td.num {font-family: Consolas, 'Courier New', monospace;}",
+            "    td.num {font-family: Consolas, 'Courier New', monospace;-webkit-print-color-adjust: exact; color-adjust: exact;}",
             "    hr {border: 0; height: 1px; background: #ddd; margin: 2.4em 0;}",
             "  </style>",
             "</head>",
@@ -788,7 +787,7 @@ class MainWindow(QMainWindow):
             "    .feature-caption .name {font-size: 2.4em; font-weight: bold; color: #0f2a6e; letter-spacing: -0.5px;}",
             "    .feature-caption .stats {font-size: 1.05em; font-weight: bold; color: #555; margin-left: 28px;}",
             "    table {border-collapse: collapse; margin: 0 auto 2.4em auto; width: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.07);}",
-            "    th, td {border: 1px solid #d0d0d0; padding: 11px 15px; text-align: center; font-size: 1.1em;}",
+            "    th, td {border: 1px solid #d0d0d0; padding: 11px 15px; text-align: center; font-size: 1.1em;-webkit-print-color-adjust: exact; color-adjust: exact;}",
             "    th {background: #e8f0ff; color: #1e3a8a; font-weight: 600;}",
             "    td {font-weight: bold;}",
             "    .diag-header {",
