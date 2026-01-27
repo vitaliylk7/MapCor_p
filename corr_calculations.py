@@ -53,6 +53,8 @@ def join_percent(stat_corr, col_a, col_b, get_data, num_records, percent):
     """
     Коэффициент пересечения топ-% значений (DIST10).
     """
+    return 0.0 #заглушка
+
     if num_records < 2 or percent <= 0 or percent > 100:
         return 0.0
 

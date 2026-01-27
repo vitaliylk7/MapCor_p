@@ -161,6 +161,121 @@ class TData:
 
             self.stats.append(TStat(min_val, max_val, mean, mean_l, min_bigger_zero))
 
+# 
+    def get_full_statistics(self):
+        """
+        Возвращает pandas DataFrame со статистикой по всем столбцам.
+        Используется для отображения в GUI и отчётах.
+        """
+        if self.df is None or self.df.empty:
+            return None
+
+        import pandas as pd
+        import numpy as np
+        from scipy.stats import skew, kurtosis
+
+        desc = self.df.describe(percentiles=[0.05, 0.25, 0.5, 0.75, 0.95]).T
+
+        # Дополнительные метрики
+        desc['skew']        = self.df.skew(numeric_only=True).round(3)
+        desc['kurtosis']    = self.df.kurtosis(numeric_only=True).round(3)
+        desc['nan_percent'] = (self.df.isna().mean() * 100).round(2)
+        desc['zero_percent']= ((self.df == 0) | (self.df <= 0.03)).mean() * 100   # учитываем LOD ~0.03
+        desc['unique_count']= self.df.nunique()
+        desc['variance']    = self.df.var(numeric_only=True).round(6)
+
+        # Округление для читаемости
+        desc = desc.round({'mean': 3, 'std': 3, 'min': 3, 'max': 3, '50%': 3})
+
+        # Переименовываем некоторые колонки для красоты
+        desc = desc.rename(columns={
+            '50%': 'median',
+            '25%': 'Q1',
+            '75%': 'Q3'
+        })
+
+        return desc
+
+    def get_geo_recommendations(self):
+        """
+        Вычисляет минимальный набор параметров и генерирует текстовые рекомендации
+        для каждой характеристики с точки зрения геолога.
+        
+        Возвращает: dict {имя_столбца: {'params': dict_параметров, 'recommendation': str}}
+        """
+        if self.df is None or self.df.empty:
+            return {}
+
+        import pandas as pd
+        import numpy as np
+
+        df = self.df.select_dtypes(include=[np.number])  # только числовые столбцы
+
+        recommendations = {}
+
+        for col in df.columns:
+            s = df[col]
+            n = len(s.dropna())
+
+            if n < 10:
+                recommendations[col] = {
+                    'params': {},
+                    'recommendation': "Мало данных (<10 значений) — характеристика неинформативна."
+                }
+                continue
+
+            # Основные параметры
+            params = {
+                'count': int(n),
+                'min': float(s.min()),
+                'p5': float(s.quantile(0.05)),
+                'median': float(s.median()),
+                'p95': float(s.quantile(0.95)),
+                'max': float(s.max()),
+                'geometric_mean': float(np.exp(np.log(s[s > 0]).mean())) if (s > 0).any() else np.nan,
+                'cv_percent': float((s.std() / s.mean() * 100)) if s.mean() != 0 else np.nan,
+                'anomaly_ratio': float(s.max() / s.median()) if s.median() != 0 else np.nan,
+                'below_lod_percent': float((s <= 0.03).mean() * 100),
+                'above_lod_count': int((s > 0.03).sum()),
+                'skewness': float(s.skew()),
+                'kurtosis': float(s.kurtosis()),
+                'unique_percent': float(s.nunique() / n * 100) if n > 0 else 0
+            }
+
+            # Формирование рекомендации
+            rec_parts = []
+
+            # 1. Неинформативность
+            if params['unique_percent'] < 5 or params['below_lod_percent'] > 70 or params['above_lod_count'] < max(20, n * 0.2):
+                rec_parts.append("Неинформативна: очень мало уникальных значений / редко детектируется выше LOD / почти константа.")
+
+            # 2. Стабильность / фон
+            elif params['cv_percent'] < 30 and params['anomaly_ratio'] < 5:
+                rec_parts.append("Стабильная фоновая характеристика, низкая изменчивость.")
+
+            # 3. Высокая изменчивость / аномалии
+            elif params['cv_percent'] > 80 or params['anomaly_ratio'] > 10:
+                rec_parts.append("Высокая изменчивость и/или сильные аномалии — потенциально интересна для поиска рудных зон.")
+
+            # 4. Трансформация
+            if params['skewness'] > 1.5 or params['kurtosis'] > 6:
+                rec_parts.append("Рекомендуется лог-трансформация (log10) перед расчётом корреляций из-за сильной асимметрии и тяжёлых хвостов.")
+
+            # 5. Редкие детекции
+            if params['below_lod_percent'] > 50:
+                rec_parts.append(f"Часто ниже LOD ({params['below_lod_percent']:.1f}%) — корреляции могут быть шумными.")
+
+            # Итоговая рекомендация
+            if not rec_parts:
+                rec_parts.append("Информативная характеристика, умеренная изменчивость, подходит для корреляционного анализа без специальной предобработки.")
+
+            recommendations[col] = {
+                'params': params,
+                'recommendation': " ".join(rec_parts)
+            }
+
+        return recommendations
+
     def get_data(self, col, rec):
         return self.df.iloc[rec, col]
 
@@ -210,3 +325,62 @@ class TData:
         if value * e > 2147483647:
             return value
         return np.ceil(value * e) / e if value > 0 else np.floor(value * e) / e
+        
+    def save_statistics_to_csv(self, filename=None):
+        """
+        Сохраняет полную статистику всех характеристик в TXT-файл с табуляцией в качестве разделителя,
+        включая столбец с рекомендациями.
+        
+        Параметры:
+            filename — путь к файлу (если None — открывается диалог сохранения)
+        
+        Возвращает:
+            True — если сохранено успешно, False — при ошибке или отмене
+        """
+        import pandas as pd
+        from pathlib import Path
+        from PySide6.QtWidgets import QFileDialog
+
+        # Получаем основную статистику
+        stats_df = self.get_full_statistics()
+        if stats_df is None or stats_df.empty:
+            return False
+
+        # Добавляем рекомендации
+        recs = self.get_geo_recommendations()
+        if recs:
+            rec_series = pd.Series(
+                {col: info['recommendation'] for col, info in recs.items()}
+            )
+            stats_df['Рекомендация'] = rec_series.reindex(stats_df.index).fillna("—")
+
+        # Если имя файла не указано — открываем диалог
+        if filename is None:
+            default_name = str(Path(self.filename).with_suffix('.statistics.txt')) if self.filename else "statistics.txt"
+            fname, _ = QFileDialog.getSaveFileName(
+                None,
+                "Сохранить статистику характеристик",
+                default_name,
+                "Текстовые файлы (*.txt);;Все файлы (*.*)"
+            )
+            if not fname:
+                return False
+            filename = fname
+
+        # Убеждаемся, что расширение .txt
+        if not str(filename).lower().endswith('.txt'):
+            filename = str(filename) + '.txt'
+
+        try:
+            stats_df.to_csv(
+                filename,
+                sep='\t',                  # табуляция как разделитель
+                encoding='utf-8-sig',
+                index_label="Признак",
+                float_format='%.6f',
+                na_rep='—'
+            )
+            return True
+        except Exception as e:
+            print(f"Ошибка сохранения статистики: {e}")
+            return False

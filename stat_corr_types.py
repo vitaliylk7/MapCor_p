@@ -99,7 +99,7 @@ class TStatCorr:
     def generate_pair_name(self, col1, col2):
         n1 = self.column_names[col1]
         n2 = self.column_names[col2]
-        return f"{n1} _ {n2}"
+        return f"{n1}_{n2}"
 
     def set_corr(self, index, value):
         if 0 <= index < len(self.corr):

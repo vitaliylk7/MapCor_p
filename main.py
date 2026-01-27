@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QDialog, QLabel, QCheckBox, QPushButton, QScrollArea, QGridLayout
 )
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QStandardItemModel, QStandardItem, QDesktopServices, QFont
+from PySide6.QtGui import QStandardItemModel, QStandardItem, QDesktopServices, QFont, QColor
 
 from data import TData
 from stat_corr_types import TStatCorr, TExtendedStat
@@ -115,6 +115,81 @@ def get_color_for_dist10(value, median=None):
 # ────────────────────────────────────────────────────────────────
 # Дальше идут классы и остальной код
 # ────────────────────────────────────────────────────────────────
+
+class StatisticsDialog(QDialog):
+    def __init__(self, data: TData, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Статистика характеристик")
+        self.resize(1400, 800)
+        self.data = data
+
+        layout = QVBoxLayout(self)
+
+        # Таблица
+        self.table = QTableView()
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
+
+        # Кнопки внизу
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("Сохранить в CSV...")
+        btn_save.clicked.connect(self.save_to_csv)
+        btn_layout.addWidget(btn_save)
+        btn_layout.addStretch()
+
+        layout.addLayout(btn_layout)
+
+        self._fill_table()
+
+    def _fill_table(self):
+        stats_df = self.data.get_full_statistics()
+        if stats_df is None or stats_df.empty:
+            QMessageBox.information(self, "Нет данных", "Данные не загружены или пустые.")
+            return
+
+        model = QStandardItemModel()
+        model.setHorizontalHeaderLabels(stats_df.columns.tolist())
+
+        for row_idx, (feature, row) in enumerate(stats_df.iterrows()):
+            items = [QStandardItem(feature)]  # первый столбец — имя признака
+
+            for val in row:
+                item = QStandardItem(str(val) if not pd.isna(val) else "—")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+                # Выделяем потенциально неинформативные красным
+                if feature == 'Z' or (row['variance'] < 1e-5) or (row['unique_count'] < len(self.data.df) * 0.05):
+                    item.setBackground(QColor(255, 220, 220))  # светло-красный
+
+                items.append(item)
+
+            model.appendRow(items)
+
+        # Добавляем заголовок "Признак" в начало
+        full_headers = ["Признак"] + stats_df.columns.tolist()
+        model.setHorizontalHeaderLabels(full_headers)
+
+        self.table.setModel(model)
+
+        # Авто-размер первых столбцов
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+
+    def save_to_csv(self):
+        fname, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить статистику", "statistics.csv", "CSV (*.csv);;Все файлы (*.*)"
+        )
+        if not fname:
+            return
+        if not fname.lower().endswith('.csv'):
+            fname += '.csv'
+
+        stats_df = self.data.get_full_statistics()
+        stats_df.to_csv(fname, encoding='utf-8-sig')
+        QMessageBox.information(self, "Сохранено", f"Статистика сохранена в {fname}")
+
 
 class ResultsDialog(QDialog):
     """Диалоговое окно с таблицей результатов корреляций"""
@@ -256,8 +331,27 @@ class MainWindow(QMainWindow):
             "Выключено — модернизированный метод (scipy) — рекомендуется"
         )
         settings_layout.addWidget(self.delphi_compat_checkbox)
+
+        btn_stats = QPushButton("Статистика характеристик")
+        btn_stats.setStyleSheet("font-weight: bold; padding: 8px; background-color: #6c757d; color: white;")
+        btn_stats.clicked.connect(self.show_statistics)
+        settings_layout.addWidget(btn_stats)
+
+        btn_save_stats = QPushButton("Сохранить статистику в CSV")
+        btn_save_stats.setStyleSheet("font-weight: bold; padding: 8px; background-color: #28a745; color: white;")
+        btn_save_stats.clicked.connect(self.act_save_statistics)
+
+        settings_layout.addWidget(btn_save_stats)
+
+        # После btn_stats или после чекбокса в settings_layout
+
+        btn_geo_rec = QPushButton("Геологические рекомендации")
+        btn_geo_rec.setStyleSheet("font-weight: bold; padding: 8px; background-color: #17a2b8; color: white;")
+        btn_geo_rec.clicked.connect(self.show_geo_recommendations)
+        settings_layout.addWidget(btn_geo_rec)
         
         right_column.addWidget(settings_group, stretch=0)  # настройки не растягиваются
+
 
         # Добавляем правую колонку в главный layout
         main_layout.addLayout(right_column, stretch=4)  # правая часть уже левой
@@ -308,6 +402,54 @@ class MainWindow(QMainWindow):
         for cb in self.check_boxes:
             if cb.isEnabled():
                 cb.setChecked(not cb.isChecked())
+
+    def act_save_statistics(self):
+        """Сохраняет статистику характеристик в CSV"""
+        if not hasattr(self, 'data') or self.data.df is None or self.data.df.empty:
+            QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
+            return
+        
+        success = self.data.save_statistics_to_csv()
+        if success:
+            QMessageBox.information(self, "Успех", "Статистика характеристик сохранена в CSV-файл.")
+        else:
+            QMessageBox.critical(self, "Ошибка", "Не удалось сохранить файл статистики.")
+
+    def show_geo_recommendations(self):
+        if not hasattr(self, 'data') or self.data.df is None or self.data.df.empty:
+            QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
+            return
+
+        recs = self.data.get_geo_recommendations()
+        if not recs:
+            QMessageBox.information(self, "Нет данных", "Нет числовых характеристик для анализа.")
+            return
+
+        # Формируем красивый текст для QMessageBox (или можно в отдельное окно)
+        text = "Рекомендации по характеристикам (геологическая интерпретация):\n\n"
+        for col, info in sorted(recs.items()):
+            text += f"• {col}:\n"
+            text += f"  {info['recommendation']}\n\n"
+
+        # Показываем в большом окне с прокруткой
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Геологические рекомендации по характеристикам")
+        msg.setText(text)
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.setDefaultButton(QMessageBox.Ok)
+
+        # Делаем окно большим и с прокруткой
+        msg.setSizeGripEnabled(True)
+        msg.setMinimumSize(800, 600)
+        msg.exec()
+
+    def show_statistics(self):
+        if not self.data.is_loaded:
+            QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
+            return
+
+        dialog = StatisticsDialog(self.data, self)
+        dialog.exec()
 
     def fill_features_list(self):
         """Заполняет сетку чекбоксов в 3 столбца + подсветка отключённых"""
@@ -381,9 +523,11 @@ class MainWindow(QMainWindow):
         operation_menu = menubar.addMenu("Операции")
         operation_menu.addAction("Вычислить корреляции", self.act_run, shortcut="F9")
 
-        view_menu = menubar.addMenu("Результаты")
-        view_menu.addAction("HTML-отчёт", self.act_view_report_old)
-        view_menu.addAction("HTML-отчёт расширенный", self.act_view_report_ext)
+        view_menu = menubar.addMenu("Отчеты")
+        
+        view_menu.addAction("Отчёт корреляций расширенный", self.act_view_report_ext)
+        view_menu.addAction("Отчёт статистики", self.act_view_stat_report)
+        view_menu.addAction("Отчёт корреляций матричный", self.act_view_report_old)
         view_menu.addAction("Таблица результатов", self.act_view_result)
 
         # Новый раздел "Экспорт"
@@ -399,7 +543,7 @@ class MainWindow(QMainWindow):
         fname, _ = QFileDialog.getOpenFileName(
             self, "Открыть файл данных",
             "",
-            "Данные (*.csv *.txt *.xlsx);;Все файлы (*.*)"
+            "Данные (*.elnm *.txt *.dat);;Все файлы (*.*)"
         )
         if not fname:
             return
@@ -508,6 +652,26 @@ class MainWindow(QMainWindow):
 
         self.statusBar.showMessage("Расширенный отчёт открыт в браузере")
 
+    def act_view_stat_report(self):
+        """Генерирует и открывает геостатистический отчёт"""
+        if self.data.df is None or self.data.df.empty:
+            QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
+            return
+
+
+        # Получаем имена выбранных столбцов
+        selected_cols = self.get_selected_columns()
+        
+        html = self._generate_stats_report(self.data, self.get_selected_columns())  #
+        
+        report_path = Path("geo_stats_report.html")
+        report_path.write_text(html, encoding="utf-8")
+        
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path.absolute())))
+        
+        self.statusBar.showMessage("Геостатистический отчёт открыт в браузере", 5000)
+
+
     def act_export_extended_report_to_word(self):
         html_content = self._generate_extended_report()
         
@@ -601,7 +765,7 @@ class MainWindow(QMainWindow):
         if len(selected_indices) < 2:
             return "<html><body><h2>Ошибка: выберите хотя бы 2 валидных признака</h2></body></html>"
 
-        BLOCK_SIZE = 10
+        BLOCK_SIZE = 8
 
         # Шаг 2: HTML-заголовок и стили (обновлены размеры и цвета для ch10-стиля)
         lines = [
@@ -636,19 +800,21 @@ class MainWindow(QMainWindow):
             "      font-size: 1.0em !important;",        # ← тот же размер, что и остальные значения
             "    }",
             "    .na {color: #888; font-style: italic; font-weight: normal;}",
-            "    .row-header {background: #f0f4ff; font-weight: bold; text-align: left; min-width: 150px;}",
+            "    .row-header {background: #f0f4ff; font-weight: bold; text-align: left; min-width: 60px;}",
             "    td.num {font-family: Consolas, 'Courier New', monospace;-webkit-print-color-adjust: exact; color-adjust: exact;}",
             "    hr {border: 0; height: 1px; background: #ddd; margin: 2.4em 0;}",
             "  </style>",
             "</head>",
             "<body>",
-            "<h1>Отчет программы MapCor</h1>",
+            "<h1>Корреляционный анализ</h1>",
             f"<p align='center' style='font-size:1.25em; margin-bottom:2.2em;'>",
+            f"<b>Программа:</b> MapCor ;  ",
             f"<b>Файл:</b> {Path(self.data.filename).name} ;  ",
-            f"<b>Выбрано признаков:</b> {len(selected_indices)} ;  ",
-            f"<b>Записей:</b> {self.data.get_count_record()} ;  ",
-            f"<b>Количество пар:</b> {self.stat_corr.count()}",
-            "<hr>"
+            f"<b>Число объектов:</b> {self.data.get_count_record()} ;  ",
+            f"<b>Число характеристик:</b> {len(selected_indices)} ;  ",
+
+
+            
         ]
 
         # Шаг 3: Общая статистика — первая
@@ -656,13 +822,17 @@ class MainWindow(QMainWindow):
         lines.append('    <table style="width:72%; max-width:950px;">')
         lines.append('      <tr><th>Показатель</th><th>Минимум</th><th>Максимум</th><th>Среднее</th></tr>')
         corr_stat = self.stat_corr.all_pairs_stat['corr']
-        lines.append(f'      <tr><td><b>Corr (R)</b></td><td>{corr_stat.min:.3f}</td><td>{corr_stat.max:.3f}</td><td>{corr_stat.mean:.3f}</td></tr>')
-        dist10_stat = self.stat_corr.all_pairs_stat['dist10']
-        lines.append(f'      <tr><td><b>DIST_10</b></td><td>{dist10_stat.min:.1f}</td><td>{dist10_stat.max:.1f}</td><td>{dist10_stat.mean:.1f}</td></tr>')
+        lines.append(f'      <tr><td><b>R</b></td><td>{corr_stat.min:.3f}</td><td>{corr_stat.max:.3f}</td><td>{corr_stat.mean:.3f}</td></tr>')
+        #dist10_stat = self.stat_corr.all_pairs_stat['dist10']
+        #lines.append(f'      <tr><td><b>DIST_10</b></td><td>{dist10_stat.min:.1f}</td><td>{dist10_stat.max:.1f}</td><td>{dist10_stat.mean:.1f}</td></tr>')
         rr_stat = self.stat_corr.all_pairs_stat['rr']
         lines.append(f'      <tr><td><b>RR</b></td><td>{rr_stat.min:.3f}</td><td>{rr_stat.max:.3f}</td><td>{rr_stat.mean:.3f}</td></tr>')
         lines.append('    </table>')
-        lines.append('    <hr>')
+        lines.append('<p style="text-align:center; color:#555; font-size:1.05em; margin: 0.8em 0 2em 0;">')
+        lines.append('<b>R</b> — коэффициент ранговой корреляции<br> <b>RR</b> — корреляция корреляций')
+        lines.append('</p>')
+
+        #lines.append('    <hr>')
 
         # Шаг 4: Таблицы по каждой характеристике
         for feature_idx in selected_indices:
@@ -675,7 +845,7 @@ class MainWindow(QMainWindow):
                 f'<span class="name">{feature_name}</span>  '
                 f'<span class="stats">'
                 f'M(R) = {fs.avg_corr:.3f} ;  '
-                f'M(DIST10) = {fs.avg_dist10:.1f} ;  '
+                #f'M(DIST10) = {fs.avg_dist10:.1f} ;  '
                 f'M(RR) = {fs.avg_rr:.3f}'
                 f'</span>'
                 '</div>'
@@ -715,20 +885,20 @@ class MainWindow(QMainWindow):
                 lines.append('      </tr>')
 
                 # DIST_10
-                lines.append('      <tr><td class="row-header"><b>DIST_10</b></td>')
-                for j in range(block_start, block_end + 1):
-                    other_idx = selected_indices[j]
-                    if feature_idx == other_idx:
-                        lines.append('        <td class="diag">100</td>')
-                    else:
-                        pair_idx = self.stat_corr.get_pair_index(feature_idx, other_idx)
-                        if pair_idx >= 0:
-                            val = self.stat_corr.get_dist10(pair_idx)
-                            color = get_color_for_dist10(val)
-                            lines.append(f'        <td style="background:{color};" class="num">{val:.1f}</td>')
-                        else:
-                            lines.append('        <td class="na">—</td>')
-                lines.append('      </tr>')
+               # lines.append('      <tr><td class="row-header"><b>DIST_10</b></td>')
+               # for j in range(block_start, block_end + 1):
+               #     other_idx = selected_indices[j]
+               #     if feature_idx == other_idx:
+               #         lines.append('        <td class="diag">100</td>')
+               #     else:
+               #         pair_idx = self.stat_corr.get_pair_index(feature_idx, other_idx)
+               #         if pair_idx >= 0:
+               #             val = self.stat_corr.get_dist10(pair_idx)
+               #             color = get_color_for_dist10(val)
+               #             lines.append(f'        <td style="background:{color};" class="num">{val:.1f}</td>')
+               #         else:
+               #             lines.append('        <td class="na">—</td>')
+               # lines.append('      </tr>')
 
                 # RR
                 lines.append('      <tr><td class="row-header"><b>RR</b></td>')
@@ -755,7 +925,7 @@ class MainWindow(QMainWindow):
         return '\n'.join(lines)
 
     def _generate_old_report(self):
-        """Генерация расширенного HTML-отчёта — версия с крупным названием и полусерым диагональным текстом"""
+        """Генерация исходной версии HTML-отчёта — версия с крупным названием и полусерым диагональным текстом"""
         
         # Шаг 1: Собираем выбранные валидные признаки
         selected_indices = []
@@ -770,7 +940,7 @@ class MainWindow(QMainWindow):
         if len(selected_indices) < 2:
             return "<html><body><h2>Ошибка: выберите хотя бы 2 валидных признака</h2></body></html>"
 
-        BLOCK_SIZE = 10
+        BLOCK_SIZE = 8
 
         # Шаг 2: HTML-заголовок и стили (обновлены размеры и цвета для ch10-стиля)
         lines = [
@@ -891,6 +1061,175 @@ class MainWindow(QMainWindow):
         return '\n'.join(lines)
 
 
+    def _generate_stats_report(self, data, selected_columns=None):
+        """
+        Генерирует HTML-отчёт со статистикой выбранных характеристик.
+        Добавлены: 5%, Q1, Q3, 95%, J (информативность по Шеннону, 6 интервалов)
+        """
+        import pandas as pd
+        import numpy as np
+        from pathlib import Path
+
+        if data.df is None or data.df.empty:
+            return "<h2>Нет данных для отчёта</h2>"
+
+        # Фильтруем по выбранным индексам
+        if selected_columns:
+            valid_indices = [idx for idx in selected_columns if 0 <= idx < len(data.df.columns)]
+            if not valid_indices:
+                return "<h2>Нет выбранных числовых характеристик</h2>"
+            df = data.df.iloc[:, valid_indices].select_dtypes(include=[np.number])
+        else:
+            df = data.df.select_dtypes(include=[np.number])
+
+        if df.empty:
+            return "<h2>Нет выбранных числовых характеристик</h2>"
+
+        # Вычисляем статистику
+        stats = pd.DataFrame(index=df.columns)
+
+        stats['Min']    = df.min()
+        stats['5%']     = df.quantile(0.05)
+        stats['Q1']     = df.quantile(0.25)
+        stats['Median'] = df.median()
+        stats['Q3']     = df.quantile(0.75)
+        stats['95%']    = df.quantile(0.95)
+        stats['Max']    = df.max()
+        stats['Range']  = stats['Max'] - stats['Min']
+        stats['Mean']   = df.mean()
+        stats['SD']     = df.std()
+        stats['CV, %']  = (stats['SD'] / stats['Mean'] * 100).fillna(0)
+
+        # ── J (Шеннон, нормированный, 6 интервалов) ────────────────────────────────
+        def compute_J(series, n_bins=6):
+            if len(series.dropna()) < 2:
+                return np.nan
+            hist, _ = np.histogram(series.dropna(), bins=n_bins)
+            total = hist.sum()
+            if total == 0:
+                return np.nan
+            pi = hist / total
+            pi = pi[pi > 0]  # исключаем пустые интервалы
+            if len(pi) == 0:
+                return np.nan
+            H = -np.sum(pi * np.log2(pi))
+            J = 1 - H / np.log2(n_bins)
+            return J
+
+        stats['J'] = [compute_J(df[col]) for col in df.columns]
+
+        # Порядок столбцов
+        stat_order = [
+            'Min', '5%', 'Q1', 'Median', 'Q3', '95%', 'Max', 'Range',
+            'Mean', 'SD', 'CV, %', 'J'
+        ]
+        stats = stats[stat_order]
+
+        stats.index.name = 'Признак'
+
+        # ── HTML ────────────────────────────────────────────────────────────────────
+        ROWS_PER_TABLE = 300
+        num_rows = len(stats)  # количество признаков
+
+        lines = [
+            "<!DOCTYPE html>",
+            "<html lang='ru'>",
+            "<head>",
+            "<meta charset='UTF-8'>",
+            "<title>Статистический отчёт MapCor</title>",
+            "<style>",
+            "  body {font-family: Arial, sans-serif; line-height: 1.5; color: #333; max-width: 1400px; margin: 0 auto; padding: 20px;}",
+            "  h1 {text-align: center; color: #1a3c5e; margin-bottom: 0.6em;}",
+            "  h2 {color: #2c5282; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.3em; margin: 1.8em 0 0.8em;}",
+            "  table {border-collapse: collapse; margin: 1.2em auto 2.8em; width: 100%; max-width: 100%; box-shadow: 0 2px 10px rgba(0,0,0,0.08);}",
+            "  th, td {border: 1px solid #d0d0d0; padding: 9px 12px; text-align: right; font-size: 0.98em; min-width: 90px;}",
+            "  th {background: #e8f0ff; color: #1e3a8a; font-weight: 600; white-space: nowrap; vertical-align: bottom;}",
+            "  .row-header {text-align: left; font-weight: bold; background: #f0f4ff; min-width: 160px; padding-left: 14px;}",
+            "  .na {color: #777; font-style: italic;}",
+            "  .small {font-size: 0.92em; color: #555;}",
+            "  .percentile {background: #f9f9ff; font-weight: 500;}",
+            "  .j-col {font-weight: bold; background: #fff7e6;}",
+            "</style>",
+            "</head>",
+            "<body>",
+            "<h1>Статистический отчёт по выбранным признакам</h1>",
+            f"<p style='text-align: center; color: #555; font-size: 1.1em; margin-bottom: 2.2em;'>",
+            f"Файл: <b>{Path(data.filename).name}</b> ;  ",
+            f"Записей: <b>{data.get_count_record()}</b> ;  ",
+            f"Признаков: <b>{num_rows}</b>",
+            "</p>",
+            "<hr style='border: 1px solid #aaa; margin: 2em 0;'>"
+        ]
+
+        # Разбиение на таблицы (если очень много признаков)
+        row_groups = []
+        start = 0
+        while start < num_rows:
+            end = min(start + ROWS_PER_TABLE, num_rows)
+            row_groups.append(stats.iloc[start:end])
+            start = end
+
+        for tbl_idx, group_df in enumerate(row_groups, 1):
+            lines.append("<table>")
+
+            lines.append("  <tr>")
+            lines.append("    <th class='row-header'>Признак</th>")
+            for stat_name in group_df.columns:
+                cls = ""
+                if stat_name in ['5%', 'Q1', 'Q3', '95%']:
+                    cls = " class='percentile'"
+                if stat_name == 'J':
+                    cls = " class='j-col'"
+                display_name = stat_name
+                lines.append(f"    <th{cls} title='{stat_name}'>{display_name}</th>")
+            lines.append("  </tr>")
+
+            for feature_name, row in group_df.iterrows():
+                lines.append("  <tr>")
+                lines.append(f"    <td class='row-header'>{feature_name}</td>")
+                for stat_name, val in row.items():
+                    if pd.isna(val):
+                        val_str = "<span class='na'>—</span>"
+                    elif stat_name in ['Min', '5%', 'Q1', 'Median', 'Q3', '95%', 'Max', 'Range', 'Mean']:
+                        val_str = f"{val:.3f}"
+                    elif stat_name == 'SD':
+                        val_str = f"{val:.4f}"
+                    elif stat_name == 'CV, %':
+                        val_str = f"{val:.1f}"
+                    elif stat_name == 'J':
+                        val_str = f"{val:.3f}"
+                        if val >= 0.65:
+                            val_str = f"<b>{val_str}</b>"
+                    else:
+                        val_str = f"{val:.3f}"
+                    lines.append(f"    <td>{val_str}</td>")
+                lines.append("  </tr>")
+
+            lines.append("</table>")
+
+        lines.append("<hr style='margin: 3em 0 1.5em;'>")
+
+        lines.append("<h2 style='text-align:center; color:#2c5282; margin-bottom:1em;'>Расшифровка показателей</h2>")
+        lines.append("<ul style='max-width:960px; margin:0 auto 2em; font-size:0.98em; line-height:1.7; list-style:none; padding-left:0;'>")
+        lines.append("  <li><strong>Min / Max</strong> — минимальное и максимальное значение</li>")
+        lines.append("  <li><strong>5% / 95%</strong> — 5-й и 95-й перцентили</li>")
+        lines.append("  <li><strong>Q1 / Q3</strong> — первый и третий квартили (25% и 75%)</li>")
+        lines.append("  <li><strong>Median</strong> — медиана (50%)</li>")
+        lines.append("  <li><strong>Range</strong> — размах (Max − Min)</li>")
+        lines.append("  <li><strong>Mean</strong> — арифметическое среднее</li>")
+        lines.append("  <li><strong>SD</strong> — стандартное отклонение</li>")
+        lines.append("  <li><strong>CV, %</strong> — коэффициент вариации (SD / Mean × 100)</li>")
+        lines.append("  <li><strong>J</strong> — нормированная информативность по Шеннону (6 интервалов). J ∈ [0;1]</li>")
+        lines.append("  <li style='margin-left:2em;'>J → 0 — полная гетерогенность (равномерное распределение)</li>")
+        lines.append("  <li style='margin-left:2em;'>J → 1 — монолитный пласт (все значения в одном интервале)</li>")
+        lines.append("  <li style='margin-left:2em;'>Рекомендуемый порог однородности: <b>J ≥ 0.65</b></li>")
+        lines.append("</ul>")
+
+        lines.append("</body>")
+        lines.append("</html>")
+
+        return '\n'.join(lines)
+
     def act_save_result(self):
         if self.stat_corr.count() == 0:
             QMessageBox.information(self, "Нет данных", "Нет рассчитанных результатов для сохранения.")
@@ -912,18 +1251,27 @@ class MainWindow(QMainWindow):
 
         try:
             with open(fname, "w", encoding="utf-8") as f:
-                # 1. Первая строка — количество признаков (столбцов)
-                f.write(f"3\n")
+                        # 1. Первая строка — количество пар (а не количество признаков!)
+                        f.write(f"4\n")
 
-                f.write("R\tDIST10\tRR\n")  # заголовок таблицы пар
+                        # 2. Заголовок таблицы
+                        f.write("n\tname\tR\tRR\n")
 
-                for i in range(self.stat_corr.count()):
-                    r_value   = self.stat_corr.get_corr(i)
-                    dist10    = self.stat_corr.get_dist10(i)
-                    rr_value  = self.stat_corr.get_rr(i)
+                        # 3. Данные по всем парам
+                        for i in range(self.stat_corr.count()):
+                            pair_name = self.stat_corr.get_pair_name(i)
+                            r_value   = self.stat_corr.get_corr(i)
+                            rr_value  = self.stat_corr.get_rr(i)
 
-                    line = f"{r_value:.3f}\t{dist10:.1f}\t{rr_value:.3f}"
-                    f.write(line + "\n")
+                            # Порядковый номер начиная с 1
+                            num = i + 1
+
+                            # Форматирование значений с учётом возможных NaN
+                            r_str  = f"{r_value:.3f}"  if not np.isnan(r_value)  else "—"
+                            rr_str = f"{rr_value:.3f}" if not np.isnan(rr_value) else "—"
+
+                            line = f"{num}\t{pair_name}\t{r_str}\t{rr_str}"
+                            f.write(line + "\n")
 
             QMessageBox.information(self, "Сохранено", f"Результаты сохранены в файл:\n{fname}")
 
