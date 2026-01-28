@@ -161,7 +161,7 @@ class TData:
 
             self.stats.append(TStat(min_val, max_val, mean, mean_l, min_bigger_zero))
 
-# 
+
     def get_full_statistics(self):
         """
         Возвращает pandas DataFrame со статистикой по всем столбцам.
@@ -177,24 +177,109 @@ class TData:
         desc = self.df.describe(percentiles=[0.05, 0.25, 0.5, 0.75, 0.95]).T
 
         # Дополнительные метрики
-        desc['skew']        = self.df.skew(numeric_only=True).round(3)
-        desc['kurtosis']    = self.df.kurtosis(numeric_only=True).round(3)
-        desc['nan_percent'] = (self.df.isna().mean() * 100).round(2)
-        desc['zero_percent']= ((self.df == 0) | (self.df <= 0.03)).mean() * 100   # учитываем LOD ~0.03
-        desc['unique_count']= self.df.nunique()
-        desc['variance']    = self.df.var(numeric_only=True).round(6)
+        desc['skew']              = self.df.skew(numeric_only=True).round(3)
+        desc['kurtosis']          = self.df.kurtosis(numeric_only=True).round(3)
+        desc['nan_percent']       = (self.df.isna().mean() * 100).round(2)
 
-        # Округление для читаемости
-        desc = desc.round({'mean': 3, 'std': 3, 'min': 3, 'max': 3, '50%': 3})
+        desc['below_lod_percent'] = ((self.df <= 0.03) | self.df.isna()).mean() * 100
+        desc['below_lod_percent'] = desc['below_lod_percent'].round(1)
 
-        # Переименовываем некоторые колонки для красоты
+        # Процент повторяющихся минимальных значений
+        def repeating_min_ratio(col):
+            if col.isna().all():
+                return 0.0
+            min_val = col.min()
+            if pd.isna(min_val):
+                return 0.0
+            count_min = (col == min_val).sum()
+            total = len(col)
+            return (count_min / total * 100) if total > 0 else 0.0
+
+        desc['repeating_min_percent'] = self.df.apply(repeating_min_ratio).round(1)
+
+        desc['zero_percent']      = ((self.df == 0) | (self.df <= 0.03)).mean() * 100
+        desc['zero_percent']      = desc['zero_percent'].round(1)
+
+        desc['unique_count']      = self.df.nunique()
+        desc['variance']          = self.df.var(numeric_only=True).round(6)
+
+        # ─── Новая метрика: CV, % ───────────────────────────────────────────────
+        # CV = std / mean * 100, с защитой от деления на 0
+        desc['CV_percent'] = np.where(
+            desc['mean'] != 0,
+            (desc['std'] / desc['mean'].abs() * 100).round(1),
+            np.nan
+        )
+
+
+        # ── J (информативность по Шеннону, нормированная на 6 интервалов) ────────────────
+        def compute_entropy_norm(series, n_bins=6):
+            """
+            Информативность J — мера однородности геологического признака.
+            Диапазон: [0, 1]
+            J → 1.0: монолитный пласт (все значения в одном интервале)
+            J → 0.0: равномерное распределение по всем 6 интервалам (макс. гетерогенность)
+            """
+            series = series.dropna()
+            if len(series) < 2:
+                return np.nan
+            
+            try:
+                # Гистограмма по фиксированным 6 интервалам
+                hist, _ = np.histogram(series, bins=n_bins)
+                total = hist.sum()
+                if total == 0:
+                    return np.nan
+                
+                # Вероятности только для непустых интервалов (защита от log2(0))
+                p = hist[hist > 0] / total
+                
+                # Энтропия Шеннона
+                H = -np.sum(p * np.log2(p))
+                
+                # Нормировка НА ФИКСИРОВАННОЕ число интервалов (6), а не на количество непустых!
+                H_max = np.log2(n_bins)
+                J = 1.0 - H / H_max
+                return J
+            
+            except Exception:
+                return np.nan
+
+        desc['J'] = self.df.apply(lambda col: compute_entropy_norm(col, n_bins=6)).round(3)
+
+        # Округление
+        desc = desc.round({
+            'mean': 3, 'std': 3, 'min': 3, 'max': 3, '50%': 3,
+            'below_lod_percent': 1, 'repeating_min_percent': 1,
+            'zero_percent': 1, 'CV_percent': 1,
+            'variance': 6, 'skew': 3, 'kurtosis': 3
+        })
+
+        # Переименование
         desc = desc.rename(columns={
             '50%': 'median',
             '25%': 'Q1',
             '75%': 'Q3'
         })
 
+        # ─── Порядок столбцов (CV ставим после std и mean) ────────────────────────
+        columns_order = [
+            'count', 'nan_percent',
+            'min', 'repeating_min_percent',
+            'below_lod_percent',
+            'zero_percent',
+            '5%', 'Q1', 'median', 'Q3', '95%', 'max',
+            'mean', 'std', 'CV_percent',          # ← новая позиция
+            'variance',
+            'skew', 'kurtosis',
+            'unique_count', 'J'
+        ]
+
+        existing_cols = [c for c in columns_order if c in desc.columns]
+        desc = desc[existing_cols]
+
         return desc
+
 
     def get_geo_recommendations(self):
         """

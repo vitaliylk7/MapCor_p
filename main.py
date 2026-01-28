@@ -661,9 +661,8 @@ class MainWindow(QMainWindow):
 
         # Получаем имена выбранных столбцов
         selected_cols = self.get_selected_columns()
-        
-        html = self._generate_stats_report(self.data, self.get_selected_columns())  #
-        
+
+        html = self._generate_stats_report(selected_columns=self.get_selected_columns())
         report_path = Path("geo_stats_report.html")
         report_path.write_text(html, encoding="utf-8")
         
@@ -1061,174 +1060,225 @@ class MainWindow(QMainWindow):
         return '\n'.join(lines)
 
 
-    def _generate_stats_report(self, data, selected_columns=None):
+    def _generate_stats_report(self, selected_columns=None):
         """
-        Генерирует HTML-отчёт со статистикой выбранных характеристик.
-        Добавлены: 5%, Q1, Q3, 95%, J (информативность по Шеннону, 6 интервалов)
+        Генерирует HTML-отчёт по статистике признаков.
+        Подсветка заголовков убрана, добавлена возможность включать/выключать столбцы и пункты легенды.
         """
-        import pandas as pd
-        import numpy as np
-        from pathlib import Path
+        if self.data.df is None or self.data.df.empty:
+            return "<h2 style='text-align:center;color:#c53030;'>Нет загруженных данных</h2>"
 
-        if data.df is None or data.df.empty:
-            return "<h2>Нет данных для отчёта</h2>"
+        stats_df = self.data.get_full_statistics()
+        if stats_df is None or stats_df.empty:
+            return "<h2 style='text-align:center;color:#c53030;'>Нет числовых признаков</h2>"
 
-        # Фильтруем по выбранным индексам
+        # ────────────────────────────────────────────────────────────────
+        # Настройки: какие столбцы показывать в таблице
+        # ────────────────────────────────────────────────────────────────
+        SHOW_COLUMNS = {
+            'count'                  : False,
+            'nan_percent'            : False,
+            'min'                    : True,
+            'repeating_min_percent'  : True,
+            'below_lod_percent'      : False,
+            'zero_percent'           : False,
+            '5%'                     : False,
+            'Q1'                     : False,
+            'median'                 : True,
+            'Q3'                     : False,
+            '95%'                    : False,
+            'max'                    : True,
+            'mean'                   : True,
+            'std'                    : True,
+            'CV_percent'             : True,
+            'variance'               : False,
+            'skew'                   : False,   # скрыт по умолчанию
+            'kurtosis'               : False,  # скрыт по умолчанию
+            'unique_count'           : False,
+            'J'                      : True,
+        }
+
+        # ────────────────────────────────────────────────────────────────
+        # Настройки: какие пункты показывать в легенде
+        # ────────────────────────────────────────────────────────────────
+        SHOW_LEGEND_ITEMS = {
+            'count'                  : False,
+            'nan_percent'            : False,
+            'min_max'                : True,
+            'repeating_min_percent'  : True,
+            'below_lod_percent'      : False,
+            'zero_percent'           : False,
+            'percentiles'            : False,
+            'quartiles_median'       : False,
+            'mean_std'               : True,
+            'CV_percent'             : True,
+            'variance'               : False,
+            'skew_kurtosis'          : False,
+            'unique_count'           : False,
+            'J'                      : True,
+        }
+
+        # Фильтруем столбцы, которые хотим показать
+        columns_to_show = [col for col in stats_df.columns if SHOW_COLUMNS.get(col, False)]
+        if not columns_to_show:
+            return "<h2 style='text-align:center;color:#c53030;'>Нет выбранных для отображения статистик</h2>"
+
+        stats_df = stats_df[columns_to_show].copy()
+        stats_df.index.name = 'Признак'
+
+        # Дополнительная фильтрация по выбранным признакам (если передан список индексов)
         if selected_columns:
-            valid_indices = [idx for idx in selected_columns if 0 <= idx < len(data.df.columns)]
-            if not valid_indices:
-                return "<h2>Нет выбранных числовых характеристик</h2>"
-            df = data.df.iloc[:, valid_indices].select_dtypes(include=[np.number])
-        else:
-            df = data.df.select_dtypes(include=[np.number])
+            valid_names = [self.data.get_column_name(i) for i in selected_columns
+                           if 0 <= i < len(self.data.df.columns)]
+            stats_df = stats_df.loc[stats_df.index.isin(valid_names)]
 
-        if df.empty:
-            return "<h2>Нет выбранных числовых характеристик</h2>"
+        if stats_df.empty:
+            return "<h2 style='text-align:center;color:#c53030;'>Нет выбранных числовых признаков</h2>"
 
-        # Вычисляем статистику
-        stats = pd.DataFrame(index=df.columns)
+        # Форматирование значений для отображения
+        display_df = stats_df.copy()
+        for col in display_df.columns:
+            if col in ['min', '5%', 'Q1', 'median', 'Q3', '95%', 'max', 'mean', 'std']:
+                display_df[col] = display_df[col].map(lambda x: f"{x:.3f}" if pd.notna(x) else "—")
+            elif col in ['CV_percent', 'below_lod_percent', 'repeating_min_percent', 'zero_percent', 'nan_percent']:
+                display_df[col] = display_df[col].map(lambda x: f"{x:.1f}" if pd.notna(x) else "—")
+            elif col == 'variance':
+                display_df[col] = display_df[col].map(lambda x: f"{x:.6f}" if pd.notna(x) else "—")
+            elif col == 'J':
+                display_df[col] = display_df[col].map(lambda x: f"{x:.3f}" if pd.notna(x) else "—")
+            else:
+                display_df[col] = display_df[col].astype(str).replace('nan', '—')
 
-        stats['Min']    = df.min()
-        stats['5%']     = df.quantile(0.05)
-        stats['Q1']     = df.quantile(0.25)
-        stats['Median'] = df.median()
-        stats['Q3']     = df.quantile(0.75)
-        stats['95%']    = df.quantile(0.95)
-        stats['Max']    = df.max()
-        stats['Range']  = stats['Max'] - stats['Min']
-        stats['Mean']   = df.mean()
-        stats['SD']     = df.std()
-        stats['CV, %']  = (stats['SD'] / stats['Mean'] * 100).fillna(0)
-
-        # ── J (Шеннон, нормированный, 6 интервалов) ────────────────────────────────
-        def compute_J(series, n_bins=6):
-            if len(series.dropna()) < 2:
-                return np.nan
-            hist, _ = np.histogram(series.dropna(), bins=n_bins)
-            total = hist.sum()
-            if total == 0:
-                return np.nan
-            pi = hist / total
-            pi = pi[pi > 0]  # исключаем пустые интервалы
-            if len(pi) == 0:
-                return np.nan
-            H = -np.sum(pi * np.log2(pi))
-            J = 1 - H / np.log2(n_bins)
-            return J
-
-        stats['J'] = [compute_J(df[col]) for col in df.columns]
-
-        # Порядок столбцов
-        stat_order = [
-            'Min', '5%', 'Q1', 'Median', 'Q3', '95%', 'Max', 'Range',
-            'Mean', 'SD', 'CV, %', 'J'
-        ]
-        stats = stats[stat_order]
-
-        stats.index.name = 'Признак'
-
-        # ── HTML ────────────────────────────────────────────────────────────────────
-        ROWS_PER_TABLE = 300
-        num_rows = len(stats)  # количество признаков
-
+        # ────────────────────────────────────────────────────────────────
+        # HTML-отчёт
+        # ────────────────────────────────────────────────────────────────
         lines = [
             "<!DOCTYPE html>",
             "<html lang='ru'>",
             "<head>",
             "<meta charset='UTF-8'>",
-            "<title>Статистический отчёт MapCor</title>",
+            "<title>Статистический отчёт — MAPCOR-P</title>",
             "<style>",
-            "  body {font-family: Arial, sans-serif; line-height: 1.5; color: #333; max-width: 1400px; margin: 0 auto; padding: 20px;}",
-            "  h1 {text-align: center; color: #1a3c5e; margin-bottom: 0.6em;}",
-            "  h2 {color: #2c5282; border-bottom: 2px solid #e2e8f0; padding-bottom: 0.3em; margin: 1.8em 0 0.8em;}",
-            "  table {border-collapse: collapse; margin: 1.2em auto 2.8em; width: 100%; max-width: 100%; box-shadow: 0 2px 10px rgba(0,0,0,0.08);}",
-            "  th, td {border: 1px solid #d0d0d0; padding: 9px 12px; text-align: right; font-size: 0.98em; min-width: 90px;}",
-            "  th {background: #e8f0ff; color: #1e3a8a; font-weight: 600; white-space: nowrap; vertical-align: bottom;}",
-            "  .row-header {text-align: left; font-weight: bold; background: #f0f4ff; min-width: 160px; padding-left: 14px;}",
-            "  .na {color: #777; font-style: italic;}",
-            "  .small {font-size: 0.92em; color: #555;}",
-            "  .percentile {background: #f9f9ff; font-weight: 500;}",
-            "  .j-col {font-weight: bold; background: #fff7e6;}",
+            "  body {font-family: 'Segoe UI', Arial, sans-serif; margin:0; padding:20px; background:#f8fafc; color:#1e293b; line-height:1.6;}",
+            "  .container {max-width:1480px; margin:0 auto; background:white; padding:30px; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.08);}",
+            "  h1 {text-align:center; color:#1e40af; margin-bottom:8px;}",
+            "  .subtitle {text-align:center; color:#475569; font-size:1.1em; margin-bottom:30px;}",
+            "  table {width:100%; border-collapse:collapse; margin:25px 0; font-size:0.94em;}",
+            "  th {background:#f1f5f9; color:#334155; padding:9px 8px; text-align:center; font-weight:600; border:1px solid #e2e8f0;}",
+            "  td {padding:8px 10px; border:1px solid #e2e8f0; text-align:right;}",
+            "  .row-header {text-align:left !important; font-weight:600; background:#f8fafc; min-width:60px; padding-left:6px;}",
+            "  .lod-col   {background:#fefce8;}",
+            "  .cv-col    {background:#fff7ed;}",
+            "  .j-col     {background:#f0fdf4; font-weight:bold;}",
+            "  .percentile{background:#f8fafc;}",
+            "  .na {color:#94a3b8; font-style:italic;}",
+            #"  .table-wrapper {overflow-x:auto; margin:30px 0; padding:10px; background:#f8fafc; border-radius:8px;}",
+            "  hr {border:none; height:1px; background:#e2e8f0; margin:40px 0;}",
             "</style>",
             "</head>",
             "<body>",
-            "<h1>Статистический отчёт по выбранным признакам</h1>",
-            f"<p style='text-align: center; color: #555; font-size: 1.1em; margin-bottom: 2.2em;'>",
-            f"Файл: <b>{Path(data.filename).name}</b> ;  ",
-            f"Записей: <b>{data.get_count_record()}</b> ;  ",
-            f"Признаков: <b>{num_rows}</b>",
-            "</p>",
-            "<hr style='border: 1px solid #aaa; margin: 2em 0;'>"
+            "<div class='container'>",
+            f"<h1>Статистический отчёт по признакам</h1>",
+            f"<p class='subtitle'>Файл: <b>{Path(self.data.filename).name}</b> | "
+            f"Записей: <b>{self.data.get_count_record():,}</b> | "
+            f"Признаков: <b>{len(stats_df)}</b></p>",
+            "<hr>",
         ]
 
-        # Разбиение на таблицы (если очень много признаков)
-        row_groups = []
-        start = 0
-        while start < num_rows:
-            end = min(start + ROWS_PER_TABLE, num_rows)
-            row_groups.append(stats.iloc[start:end])
-            start = end
+        ROWS_PER_TABLE = 250
+        chunks = [display_df.iloc[i:i+ROWS_PER_TABLE] for i in range(0, len(display_df), ROWS_PER_TABLE)]
 
-        for tbl_idx, group_df in enumerate(row_groups, 1):
+        for idx, chunk in enumerate(chunks, 1):
+           # lines.append("<div class='table-wrapper'>")
             lines.append("<table>")
-
-            lines.append("  <tr>")
-            lines.append("    <th class='row-header'>Признак</th>")
-            for stat_name in group_df.columns:
+            
+            # Заголовки
+            lines.append("<tr>")
+            lines.append("<th class='row-header'>Признак</th>")
+            for col in chunk.columns:
+                title_map = {
+                    'repeating_min_percent': 'Мин. повт., %',
+                    'below_lod_percent'    : '≤LOD, %',
+                    'zero_percent'         : 'Нули, %',
+                    'CV_percent'           : 'CV, %',
+                    'nan_percent'          : 'NaN, %',
+                    'unique_count'         : 'Уник.',
+                    'variance'             : 'Var',
+                    'J'                    : 'J (информ.)'
+                }
+                display_name = title_map.get(col, col)
                 cls = ""
-                if stat_name in ['5%', 'Q1', 'Q3', '95%']:
-                    cls = " class='percentile'"
-                if stat_name == 'J':
-                    cls = " class='j-col'"
-                display_name = stat_name
-                lines.append(f"    <th{cls} title='{stat_name}'>{display_name}</th>")
-            lines.append("  </tr>")
+                if col in ['5%', 'Q1', 'Q3', '95%']: cls = " class='percentile'"
+                if col == 'below_lod_percent':       cls = " class='lod-col'"
+                if col == 'CV_percent':              cls = " class='cv-col'"
+                if col == 'J':                       cls = " class='j-col'"
+                lines.append(f"<th{cls}>{display_name}</th>")
+            lines.append("</tr>")
 
-            for feature_name, row in group_df.iterrows():
-                lines.append("  <tr>")
-                lines.append(f"    <td class='row-header'>{feature_name}</td>")
-                for stat_name, val in row.items():
-                    if pd.isna(val):
-                        val_str = "<span class='na'>—</span>"
-                    elif stat_name in ['Min', '5%', 'Q1', 'Median', 'Q3', '95%', 'Max', 'Range', 'Mean']:
-                        val_str = f"{val:.3f}"
-                    elif stat_name == 'SD':
-                        val_str = f"{val:.4f}"
-                    elif stat_name == 'CV, %':
-                        val_str = f"{val:.1f}"
-                    elif stat_name == 'J':
-                        val_str = f"{val:.3f}"
-                        if val >= 0.65:
-                            val_str = f"<b>{val_str}</b>"
-                    else:
-                        val_str = f"{val:.3f}"
-                    lines.append(f"    <td>{val_str}</td>")
-                lines.append("  </tr>")
-
+            # Данные
+            for feature, row in chunk.iterrows():
+                lines.append("<tr>")
+                lines.append(f"<td class='row-header'>{feature}</td>")
+                for val_str in row:
+                    lines.append(f"<td>{val_str}</td>")
+                lines.append("</tr>")
+            
             lines.append("</table>")
+            if len(chunks) > 1:
+                lines.append(f"<p style='text-align:right; color:#64748b; font-size:0.9em;'>Таблица {idx} из {len(chunks)}</p>")
+            #lines.append("</div>")
 
-        lines.append("<hr style='margin: 3em 0 1.5em;'>")
+        # ────────────────────────────────────────────────────────────────
+        # Легенда — только включённые пункты
+        # ────────────────────────────────────────────────────────────────
+        legend_lines = []
+        if SHOW_LEGEND_ITEMS.get('count'):
+            legend_lines.append("  <li><strong>count</strong> — количество непропущенных значений</li>")
+        if SHOW_LEGEND_ITEMS.get('nan_percent'):
+            legend_lines.append("  <li><strong>NaN, %</strong> — доля пропущенных значений</li>")
+        if SHOW_LEGEND_ITEMS.get('min_max'):
+            legend_lines.append("  <li><strong>min / max</strong> — минимальное и максимальное значение</li>")
+        if SHOW_LEGEND_ITEMS.get('repeating_min_percent'):
+            legend_lines.append("  <li><strong>Мин. повт., %</strong> — сколько процентов строк имеют значение, равное минимальному</li>")
+        if SHOW_LEGEND_ITEMS.get('below_lod_percent'):
+            legend_lines.append("  <li><strong>≤LOD, %</strong> — доля значений ≤ 0.03 (включая NaN)</li>")
+        if SHOW_LEGEND_ITEMS.get('zero_percent'):
+            legend_lines.append("  <li><strong>Нули, %</strong> — доля нулевых или почти нулевых значений (≤ 0.03)</li>")
+        if SHOW_LEGEND_ITEMS.get('percentiles'):
+            legend_lines.append("  <li><strong>5% / 95%</strong> — 5-й и 95-й перцентили</li>")
+        if SHOW_LEGEND_ITEMS.get('quartiles_median'):
+            legend_lines.append("  <li><strong>Q1 / median / Q3</strong> — квартили и медиана</li>")
+        if SHOW_LEGEND_ITEMS.get('mean_std'):
+            legend_lines.append("  <li><strong>mean / std</strong> — среднее и стандартное отклонение</li>")
+        if SHOW_LEGEND_ITEMS.get('CV_percent'):
+            legend_lines.append("  <li><strong>CV, %</strong> — коэффициент вариации = (std / |mean|) × 100 %</li>")
+        if SHOW_LEGEND_ITEMS.get('variance'):
+            legend_lines.append("  <li><strong>Var</strong> — дисперсия</li>")
+        if SHOW_LEGEND_ITEMS.get('skew_kurtosis'):
+            legend_lines.append("  <li><strong>skew / kurtosis</strong> — асимметрия и эксцесс</li>")
+        if SHOW_LEGEND_ITEMS.get('unique_count'):
+            legend_lines.append("  <li><strong>Уник.</strong> — количество уникальных значений</li>")
+        if SHOW_LEGEND_ITEMS.get('J'):
+            legend_lines.append("  <li><strong>J (информ.)</strong> — нормированная информативность по Шеннону (6 фиксированных интервалов)<br>"
+                                "    · <strong>J ≈ 1.0</strong> — почти все значения в одном интервале → монолитный пласт<br>"
+                                "    · <strong>J ≈ 0.0</strong> — равномерное распределение по всем 6 интервалам → максимальная гетерогенность<br>"
+                                "    · Рекомендуемый порог однородности: <strong>J ≥ 0.65</strong></li>")
 
-        lines.append("<h2 style='text-align:center; color:#2c5282; margin-bottom:1em;'>Расшифровка показателей</h2>")
-        lines.append("<ul style='max-width:960px; margin:0 auto 2em; font-size:0.98em; line-height:1.7; list-style:none; padding-left:0;'>")
-        lines.append("  <li><strong>Min / Max</strong> — минимальное и максимальное значение</li>")
-        lines.append("  <li><strong>5% / 95%</strong> — 5-й и 95-й перцентили</li>")
-        lines.append("  <li><strong>Q1 / Q3</strong> — первый и третий квартили (25% и 75%)</li>")
-        lines.append("  <li><strong>Median</strong> — медиана (50%)</li>")
-        lines.append("  <li><strong>Range</strong> — размах (Max − Min)</li>")
-        lines.append("  <li><strong>Mean</strong> — арифметическое среднее</li>")
-        lines.append("  <li><strong>SD</strong> — стандартное отклонение</li>")
-        lines.append("  <li><strong>CV, %</strong> — коэффициент вариации (SD / Mean × 100)</li>")
-        lines.append("  <li><strong>J</strong> — нормированная информативность по Шеннону (6 интервалов). J ∈ [0;1]</li>")
-        lines.append("  <li style='margin-left:2em;'>J → 0 — полная гетерогенность (равномерное распределение)</li>")
-        lines.append("  <li style='margin-left:2em;'>J → 1 — монолитный пласт (все значения в одном интервале)</li>")
-        lines.append("  <li style='margin-left:2em;'>Рекомендуемый порог однородности: <b>J ≥ 0.65</b></li>")
-        lines.append("</ul>")
+        if legend_lines:
+            lines.extend([
+                "<hr>",
+                "<div style='background:#f8fafc; padding:24px; border-radius:10px; font-size:0.98em; line-height:1.7;'>",
+                "<h3 style='color:#1e40af; margin:0 0 16px 0;'>Расшифровка статистических показателей</h3>",
+                "<ul style='margin:0; padding-left:20px; columns:2; column-gap:40px;'>",
+            ])
+            lines.extend(legend_lines)
+            lines.extend([
+                "</ul>",
+                "</div>",
+            ])
 
-        lines.append("</body>")
-        lines.append("</html>")
-
-        return '\n'.join(lines)
+        lines.append("</div></body></html>")
+        return "\n".join(lines)
 
     def act_save_result(self):
         if self.stat_corr.count() == 0:
