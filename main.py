@@ -35,6 +35,13 @@ from data import TData
 from stat_corr_types import TStatCorr, TExtendedStat
 from corr_calculations import calculate_all_correlations
 
+from docx import Document
+from docx.shared import Mm, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml.ns import qn
+
+
 
 # ────────────────────────────────────────────────────────────────
 # Вспомогательные функции для цветовой кодировки (должны быть ДО классов!)
@@ -523,8 +530,8 @@ class MainWindow(QMainWindow):
         operation_menu = menubar.addMenu("Операции")
         operation_menu.addAction("Вычислить корреляции", self.act_run, shortcut="F9")
 
-        view_menu = menubar.addMenu("Отчеты")
-        
+        view_menu = menubar.addMenu("Отчеты")      
+        view_menu.addAction("Отчёт статистики *.docx", self.act_save_stats_to_word)
         view_menu.addAction("Отчёт корреляций расширенный", self.act_view_report_ext)
         view_menu.addAction("Отчёт статистики", self.act_view_stat_report)
         view_menu.addAction("Отчёт корреляций матричный", self.act_view_report_old)
@@ -669,6 +676,199 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path.absolute())))
         
         self.statusBar.showMessage("Геостатистический отчёт открыт в браузере", 5000)
+
+
+    def act_save_stats_to_word(self):
+        """
+        Экспорт статистики в Word A4.
+        - Шрифт Times New Roman 14 pt
+        - Первый столбец шире
+        - Убираем лишние нули после запятой
+        - Полностью нулевой столбец → жирный курсив
+        - Полностью нулевая строка → жирный курсив (кроме Признака)
+        """
+        stats_df = self.data.get_full_statistics()
+        if stats_df is None or stats_df.empty:
+            QMessageBox.information(self, "Нет данных", "Нет статистики для экспорта.")
+            return
+
+        # Фильтрация по выбранным признакам
+        selected_cols = self.get_selected_columns()
+        if selected_cols:
+            valid_names = [self.data.get_column_name(i) for i in selected_cols
+                           if 0 <= i < len(self.data.df.columns)]
+            stats_df = stats_df.loc[stats_df.index.isin(valid_names)]
+
+        if stats_df.empty:
+            QMessageBox.information(self, "Нет данных", "Нет выбранных признаков.")
+            return
+
+        # Оставляем только нужные столбцы
+        desired_columns = [
+            'min', 'repeating_min_percent', 'median', 'max',
+            'mean', 'std', 'CV_percent', 'J'
+        ]
+        existing_desired = [c for c in desired_columns if c in stats_df.columns]
+        stats_df = stats_df[existing_desired].copy()
+
+        # Диалог сохранения
+        fname, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить в Word", "statistics.docx", "Word (*.docx)"
+        )
+        if not fname:
+            return
+        if not fname.lower().endswith('.docx'):
+            fname += '.docx'
+
+        try:
+            doc = Document()
+
+            # Настройка страницы A4
+            section = doc.sections[0]
+            section.page_width = Mm(210)
+            section.page_height = Mm(297)
+            section.left_margin = Mm(20)
+            section.right_margin = Mm(20)
+            section.top_margin = Mm(20)
+            section.bottom_margin = Mm(20)
+
+            # Заголовок
+            title = doc.add_paragraph("Статистический отчёт по признакам")
+            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = title.runs[0]
+            run.font.name = 'Times New Roman'
+            run.font.size = Pt(16)
+            run.bold = True
+
+            # Подзаголовок
+            subtitle = doc.add_paragraph(
+                f"Файл: {Path(self.data.filename).name}   |   "
+                f"Записей: {self.data.get_count_record():,}   |   "
+                f"Признаков: {len(stats_df)}"
+            )
+            subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            subtitle.runs[0].font.name = 'Times New Roman'
+            subtitle.runs[0].font.size = Pt(12)
+            subtitle.runs[0].font.color.rgb = RGBColor(80, 80, 80)
+
+            doc.add_paragraph()
+
+            # Таблица
+            table = doc.add_table(rows=1, cols=len(stats_df.columns) + 1)
+            table.style = 'Table Grid'
+            table.autofit = False
+            table.allow_autofit = False
+
+            # Заголовки
+            hdr_cells = table.rows[0].cells
+            hdr_cells[0].text = 'Признак'
+
+            header_names = {
+                'min': 'min',
+                'repeating_min_percent': 'Мин. повт., %',
+                'median': 'median',
+                'max': 'max',
+                'mean': 'mean',
+                'std': 'std',
+                'CV_percent': 'CV, %',
+                'J': 'J (информ.)'
+            }
+
+            for i, col in enumerate(stats_df.columns, 1):
+                hdr_cells[i].text = header_names.get(col, col)
+                hdr_cells[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in hdr_cells[i].paragraphs[0].runs:
+                    run.font.name = 'Times New Roman'
+                    run.font.size = Pt(14)
+
+                        # Данные + форматирование
+            for row_idx, (feature, row) in enumerate(stats_df.iterrows()):
+                row_cells = table.add_row().cells
+                row_cells[0].text = feature
+                row_cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+                for col_idx, col_name in enumerate(stats_df.columns, 1):
+                    val = row[col_name]
+                    if pd.isna(val):
+                        val_str = "—"
+                    elif col_name in ['min', 'median', 'max', 'mean', 'std']:
+                        val_str = f"{val:g}"
+                    elif col_name in ['repeating_min_percent', 'CV_percent']:
+                        val_str = f"{val:g}"
+                    elif col_name == 'J':
+                        val_str = f"{val:g}"
+                    else:
+                        val_str = str(val)
+
+                    cell = row_cells[col_idx]
+                    cell.text = val_str
+                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+                    for run in cell.paragraphs[0].runs:
+                        run.font.name = 'Times New Roman'
+                        run.font.size = Pt(14)
+
+            # Применяем жирный курсив ко всему столбцу «Признак» (индекс 0)
+            for row in table.rows:
+                cell = row.cells[0]
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.bold = True
+                        run.italic = True
+
+            # Применяем жирный курсив ко всей строке заголовков (индекс 0)
+            for cell in table.rows[0].cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.bold = True
+                        run.italic = True
+
+            # Ширина столбцов
+            table.columns[0].width = Mm(48)  # шире для Признака
+            for i in range(1, len(table.columns)):
+                table.columns[i].width = Mm(16)
+
+            # Повтор шапки
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
+
+            trPr = table.rows[0]._tr.get_or_add_trPr()
+            tblHeader = OxmlElement('w:tblHeader')
+            tblHeader.set(qn('w:val'), 'true')
+            trPr.append(tblHeader)
+
+            # Легенда
+            doc.add_paragraph()
+            legend_title = doc.add_paragraph("Расшифровка показателей")
+            legend_title.runs[0].font.name = 'Times New Roman'
+            legend_title.runs[0].font.size = Pt(14)
+            legend_title.runs[0].bold = True
+
+            legend_items = [
+                "min — минимальное значение",
+                "Мин. повт., % — доля строк с минимальным значением",
+                "median — медиана",
+                "max — максимальное значение",
+                "mean — среднее",
+                "std — стандартное отклонение",
+                "CV, % — коэффициент вариации (std / |mean| × 100)",
+                "J (информ.) — нормированная энтропия Шеннона (6 интервалов)\n"
+                "   · J ≈ 1.0 — почти все значения в одном интервале\n"
+                "   · J ≈ 0.0 — равномерное распределение\n"
+                "   · Порог однородности: J ≥ 0.65"
+            ]
+
+            for item in legend_items:
+                p = doc.add_paragraph(item, style='List Bullet')
+                for run in p.runs:
+                    run.font.name = 'Times New Roman'
+                    run.font.size = Pt(12)
+
+            doc.save(fname)
+            QMessageBox.information(self, "Сохранено", f"Отчёт сохранён:\n{fname}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить:\n{str(e)}")
 
 
     def act_export_extended_report_to_word(self):

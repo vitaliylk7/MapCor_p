@@ -226,3 +226,5 @@ results.txt
 *.html
 results.txt
 BZH-770.txt
+*.docx
+*.txt
