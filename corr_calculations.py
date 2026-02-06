@@ -34,26 +34,11 @@ def rank_array(values):
     return ranks
 
 
-def spearman_corr_manual(vals_a, vals_b):
-    """
-    Классическая формула Спирмена (как в Delphi).
-    Используется только в режиме совместимости.
-    """
-    ranks_a = rank_array(vals_a)
-    ranks_b = rank_array(vals_b)
-    sum_d2 = np.sum((ranks_a - ranks_b) ** 2)
-    n = len(vals_a)
-    denom = n * (n**2 - 1)
-    if denom == 0:
-        return np.nan
-    return 1.0 - (6.0 * sum_d2) / denom
-
-
 def join_percent(stat_corr, col_a, col_b, get_data, num_records, percent):
     """
     Коэффициент пересечения топ-% значений (DIST10).
     """
-    return 0.0 #заглушка
+    #return 0.0 #заглушка
 
     if num_records < 2 or percent <= 0 or percent > 100:
         return 0.0
@@ -114,15 +99,10 @@ def calculate_all_correlations(
     get_data,
     num_records: int,
     percent10: int = 10,
-    delphi_compatible: bool = False
 ):
     """
     Основная функция расчёта всех корреляций.
 
-    Параметры:
-        delphi_compatible   — если True, использует собственную формулу Спирмена
-                              (максимально близко к старой Delphi-версии)
-                              если False — использует scipy.stats.spearmanr
     """
     # 1. Расчёт DIST10 (не зависит от режима)
     for i in range(stat_corr.count()):
@@ -138,10 +118,7 @@ def calculate_all_correlations(
         vals_b = np.array([get_data(col_b, rec) for rec in range(num_records)])
 
         # Расчёт корреляции
-        if delphi_compatible:
-            corr = spearman_corr_manual(vals_a, vals_b)
-        else:
-            corr, _ = spearmanr(vals_a, vals_b, nan_policy='omit')
+        corr, _ = spearmanr(vals_a, vals_b, nan_policy='omit')
 
         stat_corr.set_corr(i, corr)
 

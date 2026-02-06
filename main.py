@@ -1,7 +1,7 @@
 # main.py
 """
 MAPCOR_M — Python-версия программы для расчёта ранговых корреляций
-(перенос с Delphi → PySide6 + pandas + numpy + scipy)
+( → PySide6 + pandas + numpy + scipy)
 
 Основные функции:
 - Загрузка данных (txt/csv/xlsx)
@@ -26,7 +26,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QTableView,
     QStatusBar,  QFileDialog, QMessageBox,
-    QHeaderView, QDialog, QLabel, QCheckBox, QPushButton, QScrollArea, QGridLayout
+    QHeaderView, QDialog, QLabel, QCheckBox, QPushButton, QScrollArea, QGridLayout,
+    QDoubleSpinBox, QSpinBox
 )
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QDesktopServices, QFont, QColor
@@ -36,10 +37,11 @@ from stat_corr_types import TStatCorr, TExtendedStat
 from corr_calculations import calculate_all_correlations
 
 from docx import Document
-from docx.shared import Mm, Pt, RGBColor
+from docx.shared import Mm, Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
+from docx.enum.section import WD_SECTION_START
 
 
 
@@ -84,7 +86,7 @@ def get_color_index(value, min_val, max_val, median=None):
     value = max(min_val, min(max_val, value))
     
     if median is not None:
-        # Деление относительно медианы (как в Delphi)
+        # Деление относительно медианы 
         if value >= median:
             # Выше медианы → индексы 7..13 (7 интервалов)
             portion = (value - median) / (max_val - median) if max_val > median else 0
@@ -123,122 +125,6 @@ def get_color_for_dist10(value, median=None):
 # Дальше идут классы и остальной код
 # ────────────────────────────────────────────────────────────────
 
-class StatisticsDialog(QDialog):
-    def __init__(self, data: TData, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Статистика характеристик")
-        self.resize(1400, 800)
-        self.data = data
-
-        layout = QVBoxLayout(self)
-
-        # Таблица
-        self.table = QTableView()
-        self.table.setAlternatingRowColors(True)
-        self.table.setSortingEnabled(True)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.table)
-
-        # Кнопки внизу
-        btn_layout = QHBoxLayout()
-        btn_save = QPushButton("Сохранить в CSV...")
-        btn_save.clicked.connect(self.save_to_csv)
-        btn_layout.addWidget(btn_save)
-        btn_layout.addStretch()
-
-        layout.addLayout(btn_layout)
-
-        self._fill_table()
-
-    def _fill_table(self):
-        stats_df = self.data.get_full_statistics()
-        if stats_df is None or stats_df.empty:
-            QMessageBox.information(self, "Нет данных", "Данные не загружены или пустые.")
-            return
-
-        model = QStandardItemModel()
-        model.setHorizontalHeaderLabels(stats_df.columns.tolist())
-
-        for row_idx, (feature, row) in enumerate(stats_df.iterrows()):
-            items = [QStandardItem(feature)]  # первый столбец — имя признака
-
-            for val in row:
-                item = QStandardItem(str(val) if not pd.isna(val) else "—")
-                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-                # Выделяем потенциально неинформативные красным
-                if feature == 'Z' or (row['variance'] < 1e-5) or (row['unique_count'] < len(self.data.df) * 0.05):
-                    item.setBackground(QColor(255, 220, 220))  # светло-красный
-
-                items.append(item)
-
-            model.appendRow(items)
-
-        # Добавляем заголовок "Признак" в начало
-        full_headers = ["Признак"] + stats_df.columns.tolist()
-        model.setHorizontalHeaderLabels(full_headers)
-
-        self.table.setModel(model)
-
-        # Авто-размер первых столбцов
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-
-    def save_to_csv(self):
-        fname, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить статистику", "statistics.csv", "CSV (*.csv);;Все файлы (*.*)"
-        )
-        if not fname:
-            return
-        if not fname.lower().endswith('.csv'):
-            fname += '.csv'
-
-        stats_df = self.data.get_full_statistics()
-        stats_df.to_csv(fname, encoding='utf-8-sig')
-        QMessageBox.information(self, "Сохранено", f"Статистика сохранена в {fname}")
-
-
-class ResultsDialog(QDialog):
-    """Диалоговое окно с таблицей результатов корреляций"""
-    def __init__(self, stat_corr, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Таблица результатов корреляций")
-        self.resize(1000, 700)
-        self.stat_corr = stat_corr
-
-        layout = QVBoxLayout(self)
-
-        self.table = QTableView()
-        self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        layout.addWidget(self.table)
-
-        self._fill_table()
-
-    def _fill_table(self):
-        model = QStandardItemModel()
-        headers = ["Пара", "Spearman R", "DIST_10", "RR (мета-корр)"]
-        model.setHorizontalHeaderLabels(headers)
-
-        for i in range(self.stat_corr.count()):
-            pair_name = self.stat_corr.get_pair_name(i)
-            r = self.stat_corr.get_corr(i)
-            d10 = self.stat_corr.get_dist10(i)
-            rr = self.stat_corr.get_rr(i)
-
-            row = [
-                QStandardItem(pair_name),
-                QStandardItem(f"{r:.3f}" if not np.isnan(r) else "—"),
-                QStandardItem(f"{d10:.1f}" if not np.isnan(d10) else "—"),
-                QStandardItem(f"{rr:.3f}" if not np.isnan(rr) else "—")
-            ]
-
-            model.appendRow(row)
-
-        self.table.setModel(model)
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -248,7 +134,7 @@ class MainWindow(QMainWindow):
 
         self.data = TData()
         self.stat_corr = TStatCorr()
-
+        self.associations = None
         # Главный горизонтальный layout (левая + правая часть)
         main_layout = QHBoxLayout()
         central = QWidget()
@@ -257,7 +143,8 @@ class MainWindow(QMainWindow):
 
         # Левая панель — выбор характеристик
         left_group = QGroupBox("Выбор характеристик")
-        left_layout = QVBoxLayout(left_group)
+        left_layout = QVBoxLayout()          # ✅ Без родителя
+        left_group.setLayout(left_layout)    # ✅ Явная привязка
 
         # ─── Кнопки управления выбором ──────────────────────────────────────
         btn_layout = QHBoxLayout()
@@ -300,7 +187,9 @@ class MainWindow(QMainWindow):
 
         # Правая панель — исходные данные
         right_group = QGroupBox("Исходные данные")
-        right_layout = QVBoxLayout(right_group)
+        right_layout = QVBoxLayout()
+        right_group.setLayout(right_layout)
+
         self.table_view = QTableView()
         self.table_view.setAlternatingRowColors(True)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
@@ -311,54 +200,65 @@ class MainWindow(QMainWindow):
 
         # ─── Секция настроек — под таблицей ──────────────────────────────
         settings_group = QGroupBox("Настройки расчёта")
-        settings_layout = QVBoxLayout(settings_group)
+        settings_layout = QVBoxLayout()
+        settings_group.setLayout(settings_layout)
 
-        self.delphi_compat_checkbox = QCheckBox(
-            "Совместимость для старых отчётов"
-        )
-        # Сразу после создания чекбокса
-        self.delphi_compat_checkbox.stateChanged.connect(self._save_delphi_setting) 
+       # ─── Настройки ассоциаций ──────────────────────────────────────────
+        assoc_label = QLabel("Настройки формирования ассоциаций")
+        assoc_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        settings_layout.addWidget(assoc_label)
+        settings_layout.addSpacing(8)
 
-        # Загружаем сохранённое состояние чекбокса (если файл существует)
-        try:
-            with open("settings.json", "r", encoding="utf-8") as f:
-                settings = json.load(f)
-                saved_value = settings.get("delphi_compat", False)
-                self.delphi_compat_checkbox.setChecked(saved_value)
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            # Если файла нет или он повреждён — оставляем по умолчанию (False)
-            self.delphi_compat_checkbox.setChecked(False)  # по умолчанию — scipy
+        # Порог корреляции с корнем
+        h1 = QHBoxLayout()
+        lbl1 = QLabel("Порог корреляции с корнем кластера:")
+        self.threshold_root_spin = QDoubleSpinBox()
+        self.threshold_root_spin.setRange(0.0, 1.0)
+        self.threshold_root_spin.setSingleStep(0.05)
+        self.threshold_root_spin.setDecimals(2)
+        self.threshold_root_spin.setValue(0.80)
+        h1.addWidget(lbl1)
+        h1.addWidget(self.threshold_root_spin)
+        settings_layout.addLayout(h1)
 
+        # Порог средней корреляции внутри кластера
+        h2 = QHBoxLayout()
+        lbl2 = QLabel("Порог средней корреляции с кластером:")
+        self.threshold_avg_spin = QDoubleSpinBox()
+        self.threshold_avg_spin.setRange(0.0, 1.0)
+        self.threshold_avg_spin.setSingleStep(0.05)
+        self.threshold_avg_spin.setDecimals(2)
+        self.threshold_avg_spin.setValue(0.30)
+        h2.addWidget(lbl2)
+        h2.addWidget(self.threshold_avg_spin)
+        settings_layout.addLayout(h2)
 
-        settings_layout.addWidget(self.delphi_compat_checkbox)
+        # Максимальное количество итераций
+        h3 = QHBoxLayout()
+        lbl3 = QLabel("Макс. итераций перераспределения:")
+        self.max_iters_spin = QSpinBox()
+        self.max_iters_spin.setRange(1, 10000)
+        self.max_iters_spin.setValue(20)
+        h3.addWidget(lbl3)
+        h3.addWidget(self.max_iters_spin)
+        settings_layout.addLayout(h3)
 
-        # устанавливаем tooltip
-        self.delphi_compat_checkbox.setToolTip(
-            "Включено — точная копия старой версии\n"
-            "Выключено — модернизированный метод (scipy) — рекомендуется"
-        )
-        settings_layout.addWidget(self.delphi_compat_checkbox)
-
-        btn_stats = QPushButton("Статистика характеристик")
-        btn_stats.setStyleSheet("font-weight: bold; padding: 8px; background-color: #6c757d; color: white;")
-        btn_stats.clicked.connect(self.show_statistics)
-        settings_layout.addWidget(btn_stats)
-
-        btn_save_stats = QPushButton("Сохранить статистику в CSV")
-        btn_save_stats.setStyleSheet("font-weight: bold; padding: 8px; background-color: #28a745; color: white;")
-        btn_save_stats.clicked.connect(self.act_save_statistics)
-
-        settings_layout.addWidget(btn_save_stats)
+        # Порог сходимости
+        h4 = QHBoxLayout()
+        lbl4 = QLabel("Порог сходимости (доля перемещённых):")
+        self.convergence_epsilon_spin = QDoubleSpinBox()
+        self.convergence_epsilon_spin.setRange(0.0, 1.0)
+        self.convergence_epsilon_spin.setSingleStep(0.05)
+        self.convergence_epsilon_spin.setDecimals(2)
+        self.convergence_epsilon_spin.setValue(0.00)
+        h4.addWidget(lbl4)
+        h4.addWidget(self.convergence_epsilon_spin)
+        settings_layout.addLayout(h4)
+       
 
         # После btn_stats или после чекбокса в settings_layout
-
-        btn_geo_rec = QPushButton("Геологические рекомендации")
-        btn_geo_rec.setStyleSheet("font-weight: bold; padding: 8px; background-color: #17a2b8; color: white;")
-        btn_geo_rec.clicked.connect(self.show_geo_recommendations)
-        settings_layout.addWidget(btn_geo_rec)
         
         right_column.addWidget(settings_group, stretch=0)  # настройки не растягиваются
-
 
         # Добавляем правую колонку в главный layout
         main_layout.addLayout(right_column, stretch=4)  # правая часть уже левой
@@ -372,21 +272,225 @@ class MainWindow(QMainWindow):
         # Создаём меню
         self._create_menu()
 
-    def _save_delphi_setting(self):
-        """Сохраняет состояние чекбокса в файл settings.json"""
+        try:
+            with open("settings.json", "r", encoding="utf-8") as f:
+                settings = json.load(f)
+                self.threshold_root_spin.setValue(settings.get("threshold_root", 0.80))
+                self.threshold_avg_spin.setValue(settings.get("threshold_avg", 0.30))
+                self.max_iters_spin.setValue(settings.get("max_iters", 20))
+                self.convergence_epsilon_spin.setValue(settings.get("convergence_epsilon", 0.00))
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            pass  # оставляем значения по умолчанию
+
+        # ─── Подключение сигналов сохранения ───────────────────────────────
+        self.threshold_root_spin.valueChanged.connect(self._save_settings)
+        self.threshold_avg_spin.valueChanged.connect(self._save_settings)
+        self.max_iters_spin.valueChanged.connect(self._save_settings)
+        self.convergence_epsilon_spin.valueChanged.connect(self._save_settings)
+
+
+    def _save_settings(self):
+        """Сохраняет все настройки в settings.json"""
         settings = {
-            "delphi_compat": self.delphi_compat_checkbox.isChecked()
+            "threshold_root": round(self.threshold_root_spin.value(), 2),
+            "threshold_avg": round(self.threshold_avg_spin.value(), 2),
+            "max_iters": self.max_iters_spin.value(),
+            "convergence_epsilon": round(self.convergence_epsilon_spin.value(), 2)
         }
         try:
             with open("settings.json", "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=4, ensure_ascii=False)
+                json.dump(settings, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"Ошибка сохранения настроек: {e}")
-            # Можно показать QMessageBox, но обычно достаточно лога в консоль
+            print("Ошибка сохранения настроек:", e)
+            # можно QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить настройки:\n{str(e)}")
+
+
+    # Заглушки для новых методов (реализуем позже)
+    def form_associations(self):
+        if self.associations is not None:
+            reply = QMessageBox.question(
+                self, "Пересчитать?",
+                "Ассоциации уже сформированы. Пересчитать заново?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        if self.stat_corr.count() == 0:
+            QMessageBox.warning(self, "Нет данных", "Сначала рассчитайте корреляции.")
+            return
+
+        params = {
+            "threshold_root": self.threshold_root_spin.value(),
+            "threshold_avg": self.threshold_avg_spin.value(),
+            "max_iters": self.max_iters_spin.value(),
+            "convergence_epsilon": self.convergence_epsilon_spin.value()
+        }
+
+        from associations import build_associations   # предполагаем, что файл associations.py в той же папке
+
+        self.associations = build_associations(self.stat_corr, params)
+
+        if not self.associations:
+            QMessageBox.information(self, "Результат", "Ассоциации не сформированы (слишком слабые связи).")
+        else:
+            QMessageBox.information(self, "Готово", f"Сформировано {len(self.associations)} ассоциаций/одиночных групп.")
+
+
+
+    def generate_assoc_report_docx(self):
+        """
+        Создаёт и сохраняет отчёт по ассоциациям в формате .docx
+        """
+        if self.associations is None or not self.associations:
+            QMessageBox.information(
+                self,
+                "Нет данных",
+                "Сначала сформируйте ассоциации (меню Ассоциации → Сформировать ассоциации)."
+            )
+            return
+
+        # Диалог сохранения
+        default_name = "Ассоциации_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M") + ".docx"
+        fname, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить отчёт по ассоциациям",
+            default_name,
+            "Word документы (*.docx);;Все файлы (*.*)"
+        )
+        if not fname:
+            return
+        if not fname.lower().endswith('.docx'):
+            fname += '.docx'
+
+        # Создаём документ
+        doc = Document()
+
+        # Стили
+        style_normal = doc.styles['Normal']
+        font = style_normal.font
+        font.name = 'Arial'
+        font.size = Pt(11)
+
+        style_heading1 = doc.styles['Heading 1']
+        style_heading1.font.name = 'Arial'
+        style_heading1.font.size = Pt(16)
+        style_heading1.font.bold = True
+
+        style_heading2 = doc.styles['Heading 2']
+        style_heading2.font.name = 'Arial'
+        style_heading2.font.size = Pt(14)
+        style_heading2.font.bold = True
+
+        # Заголовок документа
+        title = doc.add_paragraph("Отчёт по ассоциациям признаков")
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title.style = 'Heading 1'
+
+        # Подзаголовок с именем файла и датой
+        p = doc.add_paragraph()
+        p.add_run(f"Файл данных: ").bold = True
+        p.add_run(f"{Path(self.data.filename).name if self.data.filename else 'не загружен'}\n")
+        p.add_run(f"Дата формирования: ").bold = True
+        p.add_run(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        doc.add_paragraph()  # пустая строка
+
+        # Параметры расчёта
+        doc.add_heading("Параметры формирования ассоциаций", level=2)
+        params_table = doc.add_table(rows=5, cols=2)
+        params_table.style = 'Table Grid'
+        params_table.columns[0].width = Inches(2.8)
+        params_table.columns[1].width = Inches(3.5)
+
+        rows_data = [
+            ("Порог корреляции с корнем", f"{self.threshold_root_spin.value():.2f}"),
+            ("Порог средней корреляции с кластером", f"{self.threshold_avg_spin.value():.2f}"),
+            ("Максимальное количество итераций", str(self.max_iters_spin.value())),
+            ("Порог сходимости (доля перемещённых)", f"{self.convergence_epsilon_spin.value():.2f}"),
+            ("Количество ассоциаций / одиночных", f"{len([c for c in self.associations if len(c['features']) > 1])} / {len([c for c in self.associations if len(c['features']) == 1])}")
+        ]
+
+        for i, (label, value) in enumerate(rows_data):
+            params_table.rows[i].cells[0].text = label
+            params_table.rows[i].cells[1].text = value
+
+        doc.add_paragraph()
+
+        # ─── Основная часть: ассоциации ─────────────────────────────────────
+        doc.add_heading("Ассоциации признаков", level=2)
+
+        assoc_num = 1
+        singles = []
+
+        for cluster in self.associations:
+            size = len(cluster['features'])
+            if size == 1:
+                singles.append(cluster)
+                continue
+
+            # Заголовок ассоциации
+            doc.add_heading(f"Ассоциация {assoc_num}  (размер: {size})", level=3)
+
+            p = doc.add_paragraph()
+            p.add_run("Корень кластера: ").bold = True
+            p.add_run(self.stat_corr.get_column_name(cluster['root']))
+
+            p = doc.add_paragraph()
+            p.add_run("Средняя корреляция внутри ассоциации: ").bold = True
+            p.add_run(f"{cluster['internal_avg_r']:.3f}")
+
+            p = doc.add_paragraph()
+            p.add_run("Средняя корреляция с внешними признаками: ").bold = True
+            p.add_run(f"{cluster['external_avg_r']:.3f}")
+
+            # Список признаков
+            doc.add_paragraph("Признаки в ассоциации:", style='List Bullet')
+            for idx in cluster['features']:
+                name = self.stat_corr.get_column_name(idx)
+                doc.add_paragraph(f"• {name}", style='List Bullet')
+
+            doc.add_paragraph()  # разделитель
+            assoc_num += 1
+
+        # ─── Одиночные признаки ─────────────────────────────────────────────
+        if singles:
+            doc.add_heading("Одиночные признаки (не вошедшие в ассоциации)", level=2)
+
+            for cluster in singles:
+                name = self.stat_corr.get_column_name(cluster['features'][0])
+                p = doc.add_paragraph(f"• {name}")
+                p.paragraph_format.left_indent = Inches(0.3)
+
+        # Сохраняем
+        try:
+            doc.save(fname)
+            QMessageBox.information(
+                self,
+                "Отчёт сохранён",
+                f"Отчёт успешно сохранён в:\n{fname}"
+            )
+
+            # Опционально: открыть файл
+            if QMessageBox.question(
+                self, "Открыть файл?",
+                "Открыть созданный документ Word?",
+                QMessageBox.Yes | QMessageBox.No
+            ) == QMessageBox.Yes:
+                import os
+                os.startfile(fname)  # Windows
+                # Для других ОС можно использовать QDesktopServices.openUrl(QUrl.fromLocalFile(fname))
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Ошибка сохранения",
+                f"Не удалось сохранить отчёт:\n{str(e)}"
+            )
 
     def _on_close(self, event):
         # Сохраняем перед закрытием
-        self._save_delphi_setting()
+        self._save_settings()
         event.accept()
 
     def get_selected_columns(self) -> list[int]:
@@ -410,7 +514,7 @@ class MainWindow(QMainWindow):
             if cb.isEnabled():
                 cb.setChecked(not cb.isChecked())
 
-    def act_save_statistics(self):
+    def act_save_statistics_ext_to_csv(self):
         """Сохраняет статистику характеристик в CSV"""
         if not hasattr(self, 'data') or self.data.df is None or self.data.df.empty:
             QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
@@ -421,42 +525,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Успех", "Статистика характеристик сохранена в CSV-файл.")
         else:
             QMessageBox.critical(self, "Ошибка", "Не удалось сохранить файл статистики.")
-
-    def show_geo_recommendations(self):
-        if not hasattr(self, 'data') or self.data.df is None or self.data.df.empty:
-            QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
-            return
-
-        recs = self.data.get_geo_recommendations()
-        if not recs:
-            QMessageBox.information(self, "Нет данных", "Нет числовых характеристик для анализа.")
-            return
-
-        # Формируем красивый текст для QMessageBox (или можно в отдельное окно)
-        text = "Рекомендации по характеристикам (геологическая интерпретация):\n\n"
-        for col, info in sorted(recs.items()):
-            text += f"• {col}:\n"
-            text += f"  {info['recommendation']}\n\n"
-
-        # Показываем в большом окне с прокруткой
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Геологические рекомендации по характеристикам")
-        msg.setText(text)
-        msg.setStandardButtons(QMessageBox.Ok)
-        msg.setDefaultButton(QMessageBox.Ok)
-
-        # Делаем окно большим и с прокруткой
-        msg.setSizeGripEnabled(True)
-        msg.setMinimumSize(800, 600)
-        msg.exec()
-
-    def show_statistics(self):
-        if not self.data.is_loaded:
-            QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
-            return
-
-        dialog = StatisticsDialog(self.data, self)
-        dialog.exec()
 
     def fill_features_list(self):
         """Заполняет сетку чекбоксов в 3 столбца + подсветка отключённых"""
@@ -524,28 +592,22 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("Файл")
         file_menu.addAction("Открыть данные...", self.act_open, shortcut="Ctrl+O")
+        file_menu.addAction("Отчёт статистики *.docx", self.act_save_stats_to_word)
+        file_menu.addAction("Сохранить статистику v2 *.csv", self.act_save_statistics_ext_to_csv)
+        
         file_menu.addSeparator()
         file_menu.addAction("Выход", self.close, shortcut="Alt+F4")
 
-        operation_menu = menubar.addMenu("Операции")
-        operation_menu.addAction("Вычислить корреляции", self.act_run, shortcut="F9")
-
-        view_menu = menubar.addMenu("Отчеты")      
-        view_menu.addAction("Отчёт статистики *.docx", self.act_save_stats_to_word)
-        view_menu.addAction("Отчёт корреляций расширенный", self.act_view_report_ext)
-        view_menu.addAction("Отчёт статистики", self.act_view_stat_report)
-        view_menu.addAction("Отчёт корреляций матричный", self.act_view_report_old)
-        view_menu.addAction("Таблица результатов", self.act_view_result)
-
-        # Новый раздел "Экспорт"
-        export_menu = menubar.addMenu("Экспорт")
-        export_menu.addAction("Экспорт расширенного отчёта в WORD", self.act_export_extended_report_to_word)
-        #export_menu.addAction("Экспорт отчёта в WORD", self.act_export_report_to_word)
-
-        save_menu = menubar.addMenu("Сохранить")
-        save_menu.addAction("Сохранить таблицу результатов...", self.act_save_result)
-        save_menu.addAction("Сохранить HTML-отчёт...", self.act_save_report)
-
+        correlation_menu = menubar.addMenu("Корреляции")
+        correlation_menu.addAction("Вычислить корреляции", self.act_run, shortcut="F9")          
+        correlation_menu.addAction("Отчёт корреляций", self.act_view_report_ext)
+        correlation_menu.addAction("Отчёт корреляций матричный", self.act_view_report_old)
+        correlation_menu.addAction("Сохранить корреляции в файл...", self.act_save_result)
+        
+        assoc_menu = menubar.addMenu("Ассоциации")
+        assoc_menu.addAction("Сформировать ассоциации", self.form_associations)
+        assoc_menu.addAction("Отчет ассоциаций Word", self.generate_assoc_report_docx)
+       
     def act_open(self):
         fname, _ = QFileDialog.getOpenFileName(
             self, "Открыть файл данных",
@@ -588,49 +650,86 @@ class MainWindow(QMainWindow):
             self.statusBar.showMessage("Ошибка загрузки файла")
 
     def act_run(self):
-        selected_cols = self.get_selected_columns()
+        """
+        Запуск расчёта корреляций по выбранным признакам.
+        """
+        # Получаем глобальные индексы выбранных и активных столбцов
+        selected_global = self.get_selected_columns()
 
-        if len(selected_cols) < 2:
-            QMessageBox.warning(self, "Предупреждение", "Выберите хотя бы два признака")
+        if len(selected_global) < 2:
+            QMessageBox.warning(
+                self,
+                "Предупреждение",
+                f"Для расчёта корреляций необходимо выбрать минимум 2 признака.\n"
+                f"Сейчас выбрано: {len(selected_global)}"
+            )
             return
 
+        # Очищаем предыдущие результаты корреляций и ассоциаций
         self.stat_corr.clear()
-        self.stat_corr.initialize(self.data.get_column_names())
-        self.stat_corr.invalid_columns = self.data.invalid_columns.copy()
+        self.associations = None  # сбрасываем предыдущие ассоциации, т.к. корреляции пересчитываются
 
-        # Создаём все пары из выбранных столбцов
-        for i in range(len(selected_cols) - 1):
-            for j in range(i + 1, len(selected_cols)):
-                self.stat_corr.add_or_get_pair(selected_cols[i], selected_cols[j])
+        # Имена только выбранных столбцов (в том порядке, в котором они выбраны)
+        selected_names = [self.data.get_column_name(idx) for idx in selected_global]
 
-        self.statusBar.showMessage("Расчёт корреляций...")
+        # Инициализируем TStatCorr ТОЛЬКО выбранными признаками
+        self.stat_corr.initialize(selected_names)
 
-        # ← Вот здесь получаем текущее состояние чекбокса
-        delphi_mode = self.delphi_compat_checkbox.isChecked()
-        #Показываем пользователю, что используется
-        mode_text = "Delphi-совместимый" if delphi_mode else "Правильный (scipy)"
-        self.statusBar.showMessage(f"Запуск расчёта в режиме: {mode_text}")
-        
-        calculate_all_correlations(
-            self.stat_corr,
-            lambda col, rec: self.data.get_data(col, rec),
-            self.data.get_count_record(),
-            percent10=10,
-            delphi_compatible=delphi_mode
-        )
+        # Переносим информацию о невалидных столбцах (локальные индексы)
+        self.stat_corr.invalid_columns = [
+            local_idx for local_idx, global_idx in enumerate(selected_global)
+            if global_idx in self.data.invalid_columns
+        ]
 
-        QMessageBox.information(self, "Расчёт завершён",
-                                f"Рассчитано {self.stat_corr.count()} пар корреляций.")
-        self.statusBar.showMessage(f"Готово. Рассчитано {self.stat_corr.count()} пар.")
+        # Создаём все пары из выбранных столбцов (используем ЛОКАЛЬНЫЕ индексы 0..n-1)
+        num_selected = len(selected_global)
+        for i in range(num_selected - 1):
+            for j in range(i + 1, num_selected):
+                self.stat_corr.add_or_get_pair(i, j)  # ← ЛОКАЛЬНЫЕ i и j!
 
-    def act_view_result(self):
-        if self.stat_corr.count() == 0:
-            QMessageBox.information(self, "Нет результатов",
-                                    "Сначала выполните расчёт (F9).")
-            return
+        # Сообщение о начале расчёта
+        self.statusBar.showMessage(f"Расчёт корреляций в режиме …")
 
-        dialog = ResultsDialog(self.stat_corr, self)
-        dialog.exec()
+        # Адаптер для доступа к данным: локальный индекс → значение из исходных данных
+        def get_data_adapter(local_col: int, row: int) -> float:
+            global_col = selected_global[local_col]
+            return self.data.get_data(global_col, row)
+
+        try:
+            calculate_all_correlations(
+                stat_corr=self.stat_corr,
+                get_data=get_data_adapter,
+                num_records=self.data.get_count_record(),
+                percent10=10
+            )
+
+            pair_count = self.stat_corr.count()
+            feature_count = len(self.stat_corr.column_names)
+
+            # Успешное завершение
+            QMessageBox.information(
+                self,
+                "Расчёт завершён",
+                f"Успешно рассчитано корреляций для {feature_count} признаков.\n"
+                f"Количество пар: {pair_count}"
+            )
+
+            self.statusBar.showMessage(
+                f"Готово. Рассчитано {pair_count} пар для {feature_count} признаков."
+            )
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()  # для отладки в консоль
+
+            QMessageBox.critical(
+                self,
+                "Ошибка при расчёте корреляций",
+                f"Произошла ошибка во время вычисления корреляций:\n\n{str(e)}\n\n"
+                f"Проверьте данные и настройки. Если проблема повторяется — сообщите разработчику."
+            )
+
+            self.statusBar.showMessage("Ошибка при расчёте корреляций")
 
     def act_view_report_old(self):
         """Вариант отчета из старой версии"""
@@ -659,25 +758,6 @@ class MainWindow(QMainWindow):
 
         self.statusBar.showMessage("Расширенный отчёт открыт в браузере")
 
-    def act_view_stat_report(self):
-        """Генерирует и открывает геостатистический отчёт"""
-        if self.data.df is None or self.data.df.empty:
-            QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
-            return
-
-
-        # Получаем имена выбранных столбцов
-        selected_cols = self.get_selected_columns()
-
-        html = self._generate_stats_report(selected_columns=self.get_selected_columns())
-        report_path = Path("geo_stats_report.html")
-        report_path.write_text(html, encoding="utf-8")
-        
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path.absolute())))
-        
-        self.statusBar.showMessage("Геостатистический отчёт открыт в браузере", 5000)
-
-
     def act_save_stats_to_word(self):
         """
         Экспорт статистики в Word A4.
@@ -705,8 +785,8 @@ class MainWindow(QMainWindow):
 
         # Оставляем только нужные столбцы
         desired_columns = [
-            'min', 'repeating_min_percent', 'median', 'max',
-            'mean', 'std', 'CV_percent', 'J'
+            'repeating_min_percent', 'min', 'max', 'mean', 'median',
+            'std', 'CV_percent', 'J'
         ]
         existing_desired = [c for c in desired_columns if c in stats_df.columns]
         stats_df = stats_df[existing_desired].copy()
@@ -761,17 +841,17 @@ class MainWindow(QMainWindow):
 
             # Заголовки
             hdr_cells = table.rows[0].cells
-            hdr_cells[0].text = 'Признак'
+            hdr_cells[0].text = 'Хар-ка'
 
-            header_names = {
-                'min': 'min',
-                'repeating_min_percent': 'Мин. повт., %',
-                'median': 'median',
-                'max': 'max',
-                'mean': 'mean',
-                'std': 'std',
-                'CV_percent': 'CV, %',
-                'J': 'J (информ.)'
+            header_names = {               
+                'repeating_min_percent': 'BLS, %',
+                'min': 'Min',
+                'max': 'Max',
+                'mean': 'Mean',
+                'median': 'Med',
+                'std': 'Std',
+                'CV_percent': 'V, %',
+                'J': 'J'
             }
 
             for i, col in enumerate(stats_df.columns, 1):
@@ -845,60 +925,90 @@ class MainWindow(QMainWindow):
             legend_title.runs[0].bold = True
 
             legend_items = [
-                "min — минимальное значение",
-                "Мин. повт., % — доля строк с минимальным значением",
-                "median — медиана",
-                "max — максимальное значение",
-                "mean — среднее",
-                "std — стандартное отклонение",
-                "CV, % — коэффициент вариации (std / |mean| × 100)",
-                "J (информ.) — нормированная энтропия Шеннона (6 интервалов)\n"
-                "   · J ≈ 1.0 — почти все значения в одном интервале\n"
-                "   · J ≈ 0.0 — равномерное распределение\n"
+                "BLS, % — доля значений ниже чувствительности",
+                "Min — минимальное значение",
+                "Max — максимальное значение",
+                "Mean — матожидание",
+                "Med — медиана",
+                "Std — стандартное отклонение",
+                "V, % — коэффициент вариации (станд. отклон. / |mean| × 100)",
+                "J  — нормированная энтропия Шеннона (6 интервалов)\n"
+                "   · J ≈ 0 — почти все значения в одном интервале\n"
+                "   · J ≈ 1 — равномерное распределение\n"
                 "   · Порог однородности: J ≥ 0.65"
             ]
 
             for item in legend_items:
-                p = doc.add_paragraph(item, style='List Bullet')
-                for run in p.runs:
-                    run.font.name = 'Times New Roman'
-                    run.font.size = Pt(12)
+                # Разбиваем элемент на строки по символу новой строки
+                lines = item.split('\n')
+                first_line = lines[0].rstrip()  # убираем лишние пробелы справа
+                
+                # Обрабатываем первую строку с разделителем " — "
+                if " — " in first_line:
+                    short_name, description = first_line.split(" — ", 1)
+                    
+                    # Создаём абзац со стилем маркированного списка
+                    p = doc.add_paragraph(style='List Bullet')
+                    
+                    # Часть 1: краткое название — жирный курсив
+                    run1 = p.add_run(short_name)
+                    run1.bold = True
+                    run1.italic = True
+                    run1.font.name = 'Times New Roman'
+                    run1.font.size = Pt(12)
+                    run1.font.element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')  # для кириллицы
+                    
+                    # Часть 2: разделитель " — " — обычный курсив
+                    run2 = p.add_run(" — ")
+                    run2.italic = True
+                    run2.font.name = 'Times New Roman'
+                    run2.font.size = Pt(12)
+                    run2.font.element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+                    
+                    # Часть 3: описание — обычный курсив
+                    run3 = p.add_run(description)
+                    run3.italic = True
+                    run3.font.name = 'Times New Roman'
+                    run3.font.size = Pt(12)
+                    run3.font.element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+                else:
+                    # Если нет разделителя — весь текст курсивом
+                    p = doc.add_paragraph(first_line, style='List Bullet')
+                    for run in p.runs:
+                        run.italic = True
+                        run.font.name = 'Times New Roman'
+                        run.font.size = Pt(12)
+                        run.font.element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+                
+                # Обрабатываем дополнительные строки (подпункты) с отступом
+                for extra_line in lines[1:]:
+                    extra_line = extra_line.strip()
+                    if extra_line:  # пропускаем пустые строки
+                        p_extra = doc.add_paragraph(extra_line)
+                        p_extra.paragraph_format.left_indent = Pt(20)  # отступ слева
+                        
+                        # Весь текст подпункта — курсивом
+                        for run in p_extra.runs:
+                            run.italic = True
+                            run.font.name = 'Times New Roman'
+                            run.font.size = Pt(12)
+                            run.font.element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
 
             doc.save(fname)
             QMessageBox.information(self, "Сохранено", f"Отчёт сохранён:\n{fname}")
 
+            # Опционально: открыть файл
+            if QMessageBox.question(
+                self, "Открыть файл?",
+                "Открыть созданный документ Word?",
+                QMessageBox.Yes | QMessageBox.No
+            ) == QMessageBox.Yes:
+                import os
+                os.startfile(fname)  # Windows
+
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить:\n{str(e)}")
 
-
-    def act_export_extended_report_to_word(self):
-        html_content = self._generate_extended_report()
-        
-        # Модифицируем HTML для лучшей совместимости с Pandoc
-        html_content = self._prepare_html_for_pandoc(html_content)
-        
-        fname, _ = QFileDialog.getSaveFileName(self, "Сохранить", "report.docx", "Word (*.docx)")
-        if not fname: return
-        if not fname.endswith('.docx'): fname += '.docx'
-        
-        temp_html = "temp_report.html"
-        with open(temp_html, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        
-        try:
-            subprocess.run([
-                "pandoc",
-                temp_html,
-                "-o", fname,
-                "--from=html+raw_html",
-                "--to=docx",
-                "--standalone"
-            ], check=True)
-            
-            os.remove(temp_html)
-            QMessageBox.information(self, "Успех", f"Сохранено:\n{fname}")
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Pandoc не запустился:\n{e}\nУбедитесь, что Pandoc установлен.")
 
     def _prepare_html_for_pandoc(self, html_content):
         """
@@ -948,21 +1058,16 @@ class MainWindow(QMainWindow):
         
         return str(soup)
 
+
     def _generate_extended_report(self):
         """Генерация расширенного HTML-отчёта — версия с крупным названием и полусерым диагональным текстом"""
         
-        # Шаг 1: Собираем выбранные валидные признаки
-        selected_indices = []
-        for i in range(len(self.check_boxes)):
-            item = self.check_boxes[i]
-            if item.checkState() == Qt.Checked:
-                col_name = item.text().replace(" [invalid]", "")
-                col_idx = self.data.get_number_for_column_name(col_name)
-                if col_idx >= 0 and col_idx not in self.data.invalid_columns:
-                    selected_indices.append(col_idx)
-
-        if len(selected_indices) < 2:
+        # Шаг 1: Получаем список индексов признаков из self.stat_corr
+        num_features = len(self.stat_corr.column_names)
+        if num_features < 2:
             return "<html><body><h2>Ошибка: выберите хотя бы 2 валидных признака</h2></body></html>"
+
+        selected_indices = list(range(num_features))  # Индексы 0..num_features-1, соответствующие self.stat_corr.column_names
 
         BLOCK_SIZE = 8
 
@@ -1010,9 +1115,8 @@ class MainWindow(QMainWindow):
             f"<b>Программа:</b> MapCor ;  ",
             f"<b>Файл:</b> {Path(self.data.filename).name} ;  ",
             f"<b>Число объектов:</b> {self.data.get_count_record()} ;  ",
-            f"<b>Число характеристик:</b> {len(selected_indices)} ;  ",
-
-
+            f"<b>Число характеристик:</b> {num_features} ;  ",
+            
             
         ]
 
@@ -1035,7 +1139,7 @@ class MainWindow(QMainWindow):
 
         # Шаг 4: Таблицы по каждой характеристике
         for feature_idx in selected_indices:
-            feature_name = self.data.get_column_name(feature_idx)
+            feature_name = self.stat_corr.get_column_name(feature_idx)
             fs = self.stat_corr.feature_stats[feature_idx]
 
             # Одна строка над таблицей: крупное имя + маленькая статистика
@@ -1060,7 +1164,7 @@ class MainWindow(QMainWindow):
 
                 # Заголовки столбцов — диагональ выделена сильнее
                 for j in range(block_start, block_end + 1):
-                    col_name = self.data.get_column_name(selected_indices[j])
+                    col_name = self.stat_corr.get_column_name(selected_indices[j])
                     if selected_indices[j] == feature_idx:
                         lines.append(f'        <th class="diag-header">{col_name}</th>')
                     else:
@@ -1124,120 +1228,104 @@ class MainWindow(QMainWindow):
         return '\n'.join(lines)
 
     def _generate_old_report(self):
-        """Генерация исходной версии HTML-отчёта — версия с крупным названием и полусерым диагональным текстом"""
-        
-        # Шаг 1: Собираем выбранные валидные признаки
-        selected_indices = []
-        for i in range(len(self.check_boxes)):
-            item = self.check_boxes[i]
-            if item.checkState() == Qt.Checked:
-                col_name = item.text().replace(" [invalid]", "")
-                col_idx = self.data.get_number_for_column_name(col_name)
-                if col_idx >= 0 and col_idx not in self.data.invalid_columns:
-                    selected_indices.append(col_idx)
+        """
+        Генерация классической версии HTML-отчёта с матрицей:
+        - выше диагонали → Spearman R
+        - ниже диагонали → DIST₁₀
+        Работает на основе содержимого self.stat_corr, без зависимости от текущего состояния чекбоксов.
+        """
+        # Если ничего не посчитано — выходим рано
+        if self.stat_corr.count() == 0 or len(self.stat_corr.column_names) < 2:
+            return "<html><body><h2>Ошибка: нет рассчитанных корреляций или менее 2 признаков</h2></body></html>"
 
-        if len(selected_indices) < 2:
-            return "<html><body><h2>Ошибка: выберите хотя бы 2 валидных признака</h2></body></html>"
+        # Берём все признаки, которые участвовали в расчёте (из stat_corr)
+        selected_indices = list(range(len(self.stat_corr.column_names)))
 
-        BLOCK_SIZE = 8
+        BLOCK_SIZE = 8  # можно оставить или убрать блочность — решайте по красоте
 
-        # Шаг 2: HTML-заголовок и стили (обновлены размеры и цвета для ch10-стиля)
         lines = [
             "<!DOCTYPE html>",
             "<html lang='ru'>",
             "<head>",
             "  <meta charset='UTF-8'>",
-            "  <title>Отчет программы MapCor</title>",
+            "  <title>Отчет программы MapCor — классическая матрица</title>",
             "  <style>",
             "    body {font-family: 'Segoe UI', Arial, sans-serif; margin: 32px; background: #f9f9f9; color: #222; font-size: 1.05em;}",
             "    h1 {color: #1a3c5e; text-align: center; font-size: 2.3em; margin-bottom: 0.5em;}",
             "    h2 {color: #2c5282; text-align: center; font-size: 1.7em; margin: 2em 0 0.8em;}",
-            "    .feature-caption {text-align: center; margin: 1.8em 0 0.9em;}",
-            "    .feature-caption .name {font-size: 2.4em; font-weight: bold; color: #0f2a6e; letter-spacing: -0.5px;}",
-            "    .feature-caption .stats {font-size: 1.05em; font-weight: bold; color: #555; margin-left: 28px;}",
-            "    table {border-collapse: collapse; margin: 0 auto 2.4em auto; width: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.07);}",
-            "    th, td {border: 1px solid #d0d0d0; padding: 11px 15px; text-align: center; font-size: 1.1em;-webkit-print-color-adjust: exact; color-adjust: exact;}",
+            "    table {border-collapse: collapse; margin: 0 auto 3em auto; width: auto; box-shadow: 0 3px 12px rgba(0,0,0,0.08);}",
+            "    th, td {border: 1px solid #d0d0d0; padding: 10px 14px; text-align: center; font-size: 1.05em; -webkit-print-color-adjust: exact; color-adjust: exact;}",
             "    th {background: #e8f0ff; color: #1e3a8a; font-weight: 600;}",
             "    td {font-weight: bold;}",
-            "    .diag-header {",
-            "      font-size: 1.25em !important;",
-            "      font-weight: bold !important;",
-            "      background: #b3e0ff !important;",
-            "      border: 2px solid #80c0ff !important;",
-            "      padding: 12px 16px !important;",
-            "    }",
             "    .diag {",
-            "      background: #e8e8e8 !important;",
-            "      color: #B3B3B3 !important;",           # ← полусерый текст на диагонали
+            "      background: #e0e0ff !important;",
+            "      color: #888 !important;",
             "      font-style: italic;",
             "      font-weight: bold;",
-            "      font-size: 1.0em !important;",        # ← тот же размер, что и остальные значения
             "    }",
-            "    .na {color: #888; font-style: italic; font-weight: normal;}",
-            "    .row-header {background: #f0f4ff; font-weight: bold; text-align: left; min-width: 150px;}",
+            "    .na {color: #999; font-style: italic; font-weight: normal;}",
+            "    .row-header {background: #f0f4ff; font-weight: bold; text-align: left; min-width: 180px; padding-left: 12px;}",
             "    td.num {font-family: Consolas, 'Courier New', monospace;}",
-            "    hr {border: 0; height: 1px; background: #ddd; margin: 2.4em 0;}",
+            "    hr {border: 0; height: 1px; background: #ddd; margin: 3em 0;}",
             "  </style>",
             "</head>",
             "<body>",
-            "<h1>Отчет программы MapCor</h1>",
-            f"<p align='center' style='font-size:1.25em; margin-bottom:2.2em;'>",
+            "<h1>Матрица корреляций Спирмена и DIST₁₀</h1>",
+            f"<p style='text-align:center; font-size:1.25em; margin-bottom:2.2em;'>",
             f"<b>Файл:</b> {Path(self.data.filename).name} ;  ",
-            f"<b>Выбрано признаков:</b> {len(selected_indices)} ;  ",
             f"<b>Записей:</b> {self.data.get_count_record()} ;  ",
-            f"<b>Количество пар:</b> {self.stat_corr.count()}",
-            "<hr>"
+            f"<b>Признаков в расчёте:</b> {len(selected_indices)} ;  ",
+            f"<b>Пар:</b> {self.stat_corr.count()}",
+            "</p>",
+            "<hr>",
         ]
 
-        # Шаг 3: Общая статистика — первая
-        lines.append('    <h2>Общая статистика по всем выбранным парам</h2>')
-        lines.append('    <table style="width:72%; max-width:950px;">')
+        # Общая статистика
+        lines.append('    <h2>Общая статистика по всем парам</h2>')
+        lines.append('    <table style="width:72%; max-width:950px; margin-bottom:2.5em;">')
         lines.append('      <tr><th>Показатель</th><th>Минимум</th><th>Максимум</th><th>Среднее</th></tr>')
-        corr_stat = self.stat_corr.all_pairs_stat['corr']
-        lines.append(f'      <tr><td><b>Corr (R)</b></td><td>{corr_stat.min:.3f}</td><td>{corr_stat.max:.3f}</td><td>{corr_stat.mean:.3f}</td></tr>')
-        dist10_stat = self.stat_corr.all_pairs_stat['dist10']
-        lines.append(f'      <tr><td><b>DIST_10</b></td><td>{dist10_stat.min:.1f}</td><td>{dist10_stat.max:.1f}</td><td>{dist10_stat.mean:.1f}</td></tr>')
-        rr_stat = self.stat_corr.all_pairs_stat['rr']
-        lines.append(f'      <tr><td><b>RR</b></td><td>{rr_stat.min:.3f}</td><td>{rr_stat.max:.3f}</td><td>{rr_stat.mean:.3f}</td></tr>')
-        lines.append('    </table>')
-        lines.append('    <hr>')
 
-        # Шаг 4: Таблицы по каждой характеристике
-        # =============================================================================
-        # Матрица корреляций + DIST10 (верхний треугольник = R, нижний = DIST10)
-        # =============================================================================
-        lines.append('<h2 style="margin-top: 3.5em; text-align: center;">Матрица корреляций Спирмена и DIST₁₀</h2>')
-        lines.append('<p style="text-align:center; color:#555; font-size:1.05em; margin: 0.8em 0 2em 0;">')
+        corr_stat = self.stat_corr.all_pairs_stat['corr']
+        lines.append(f'      <tr><td><b>R (Spearman)</b></td><td>{corr_stat.min:.3f}</td><td>{corr_stat.max:.3f}</td><td>{corr_stat.mean:.3f}</td></tr>')
+
+        dist10_stat = self.stat_corr.all_pairs_stat['dist10']
+        lines.append(f'      <tr><td><b>DIST₁₀</b></td><td>{dist10_stat.min:.1f}</td><td>{dist10_stat.max:.1f}</td><td>{dist10_stat.mean:.1f}</td></tr>')
+
+        rr_stat = self.stat_corr.all_pairs_stat['rr']
+        lines.append(f'      <tr><td><b>RR (мета-корр)</b></td><td>{rr_stat.min:.3f}</td><td>{rr_stat.max:.3f}</td><td>{rr_stat.mean:.3f}</td></tr>')
+
+        lines.append('    </table>')
+        lines.append('<p style="text-align:center; color:#555; font-size:1.05em; margin: 0.8em 0 2.5em 0;">')
         lines.append('Выше диагонали — <b>R (Spearman)</b><br>Ниже диагонали — <b>DIST₁₀</b>')
         lines.append('</p>')
 
-        lines.append('<table style="margin: 0 auto 3em auto; border-collapse: collapse; box-shadow: 0 3px 12px rgba(0,0,0,0.08);">')
+        # Основная матрица
+        lines.append('<table style="margin: 0 auto 4em auto;">')
 
-        # ── Заголовочная строка (имена признаков) ────────────────────────────────────
+        # Заголовочная строка
         lines.append('  <tr>')
-        lines.append('    <th style="background:#e8f0ff; min-width:180px; font-weight:bold; padding:12px;"></th>')
+        lines.append('    <th class="row-header"></th>')
         for col_idx in selected_indices:
-            col_name = self.data.get_column_name(col_idx)
-            lines.append(f'    <th title="{col_name}" style="background:#e8f0ff; padding:10px 14px;">{col_name}</th>')
+            col_name = self.stat_corr.get_column_name(col_idx)
+            lines.append(f'    <th title="{col_name}">{col_name}</th>')
         lines.append('  </tr>')
 
-        # ── Строки матрицы ───────────────────────────────────────────────────────────
+        # Строки матрицы
         for row_i, row_idx in enumerate(selected_indices):
-            row_name = self.data.get_column_name(row_idx)
+            row_name = self.stat_corr.get_column_name(row_idx)
             lines.append('  <tr>')
-            # Левый столбец — имена строк
-            lines.append(f'    <td class="row-header" style="min-width:180px;">{row_name}</td>')
+            lines.append(f'    <td class="row-header">{row_name}</td>')
 
             for col_j, col_idx in enumerate(selected_indices):
                 if row_i == col_j:
-                    # Главная диагональ — всегда 1.000 (для корреляции)
-                    lines.append('    <td class="diag" style="background:#d0e0ff; font-weight:bold; color:#1a3c5e;">1.000</td>')
+                    # Диагональ — всегда 1.000 для R
+                    lines.append('    <td class="diag">1.000</td>')
                 elif row_i < col_j:
                     # Выше диагонали → Spearman R
                     pair_idx = self.stat_corr.get_pair_index(row_idx, col_idx)
                     if pair_idx >= 0:
                         val = self.stat_corr.get_corr(pair_idx)
-                        color = get_color_for_r(val)   # ← твоя функция цвета для R
+                        color = get_color_for_r(val)
                         lines.append(f'    <td style="background:{color};" class="num">{val:.3f}</td>')
                     else:
                         lines.append('    <td class="na">—</td>')
@@ -1246,7 +1334,7 @@ class MainWindow(QMainWindow):
                     pair_idx = self.stat_corr.get_pair_index(row_idx, col_idx)
                     if pair_idx >= 0:
                         val = self.stat_corr.get_dist10(pair_idx)
-                        color = get_color_for_dist10(val)   # ← твоя функция цвета для DIST10
+                        color = get_color_for_dist10(val)
                         lines.append(f'    <td style="background:{color};" class="num">{val:.1f}</td>')
                     else:
                         lines.append('    <td class="na">—</td>')
@@ -1254,11 +1342,10 @@ class MainWindow(QMainWindow):
             lines.append('  </tr>')
 
         lines.append('</table>')
-        lines.append('<hr style="margin: 3em 0;">')
+        lines.append('<hr style="margin: 4em 0 2em 0;">')
 
         lines.append('  </body></html>')
         return '\n'.join(lines)
-
 
     def _generate_stats_report(self, selected_columns=None):
         """
@@ -1529,19 +1616,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка сохранения",
                                 f"Не удалось сохранить файл:\n{str(e)}")
             
-            
-    def act_save_report(self):
-        fname, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить HTML-отчёт", "mapcor_report.html", "HTML (*.html);;Все файлы (*.*)"
-        )
-        if not fname:
-            return
-
-        html = self._generate_simple_html_report()
-        Path(fname).write_text(html, encoding="utf-8")
-
-        QMessageBox.information(self, "Сохранено", f"Отчёт сохранён в {fname}")
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
