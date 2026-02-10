@@ -592,21 +592,21 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("Файл")
         file_menu.addAction("Открыть данные...", self.act_open, shortcut="Ctrl+O")
-        file_menu.addAction("Отчёт статистики *.docx", self.act_save_stats_to_word)
-        file_menu.addAction("Сохранить статистику v2 *.csv", self.act_save_statistics_ext_to_csv)
+        file_menu.addAction("Отчёт статистики (Word)", self.act_save_stats_to_word)
+        #file_menu.addAction("Сохранить статистику v2 *.csv", self.act_save_statistics_ext_to_csv)
         
         file_menu.addSeparator()
         file_menu.addAction("Выход", self.close, shortcut="Alt+F4")
 
         correlation_menu = menubar.addMenu("Корреляции")
         correlation_menu.addAction("Вычислить корреляции", self.act_run, shortcut="F9")          
-        correlation_menu.addAction("Отчёт корреляций", self.act_view_report_ext)
-        correlation_menu.addAction("Отчёт корреляций матричный", self.act_view_report_old)
+        correlation_menu.addAction("Отчёт корреляций (HTML)", self.act_view_report_ext)
+        correlation_menu.addAction("Отчёт корреляций матричный(HTML)", self.act_view_report_old)
         correlation_menu.addAction("Сохранить корреляции в файл...", self.act_save_result)
         
         assoc_menu = menubar.addMenu("Ассоциации")
-        assoc_menu.addAction("Сформировать ассоциации", self.form_associations)
-        assoc_menu.addAction("Отчет ассоциаций Word", self.generate_assoc_report_docx)
+        assoc_menu.addAction("Сформировать ассоциации", self.form_associations, shortcut="F10")
+        assoc_menu.addAction("Отчет ассоциаций (Word)", self.generate_assoc_report_docx)
        
     def act_open(self):
         fname, _ = QFileDialog.getOpenFileName(
