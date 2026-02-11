@@ -272,16 +272,9 @@ class MainWindow(QMainWindow):
         # Создаём меню
         self._create_menu()
 
-        try:
-            with open("settings.json", "r", encoding="utf-8") as f:
-                settings = json.load(f)
-                self.threshold_root_spin.setValue(settings.get("threshold_root", 0.80))
-                self.threshold_avg_spin.setValue(settings.get("threshold_avg", 0.30))
-                self.max_iters_spin.setValue(settings.get("max_iters", 20))
-                self.convergence_epsilon_spin.setValue(settings.get("convergence_epsilon", 0.00))
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            pass  # оставляем значения по умолчанию
-
+        # Загружаем настройки
+        self.working_directory = self._load_settings_from_file()
+        
         # ─── Подключение сигналов сохранения ───────────────────────────────
         self.threshold_root_spin.valueChanged.connect(self._save_settings)
         self.threshold_avg_spin.valueChanged.connect(self._save_settings)
@@ -304,6 +297,49 @@ class MainWindow(QMainWindow):
             print("Ошибка сохранения настроек:", e)
             # можно QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить настройки:\n{str(e)}")
 
+    def _get_initial_dir(self):
+        """Возвращает начальную директорию для файловых диалогов"""
+        # Проверяем, существует ли рабочая директория
+        if os.path.isdir(self.working_directory):
+            return self.working_directory
+        else:
+            # Если нет, используем текущую директорию
+            return "."
+
+
+    def _load_settings_from_file(self):
+        """Загружает настройки из settings.json и возвращает рабочую директорию"""
+        try:
+            with open("settings.json", "r", encoding="utf-8") as f:
+                settings = json.load(f)
+                
+                # Загружаем значения параметров
+                self.threshold_root_spin.setValue(settings.get("threshold_root", 0.80))
+                self.threshold_avg_spin.setValue(settings.get("threshold_avg", 0.30))
+                self.max_iters_spin.setValue(settings.get("max_iters", 20))
+                self.convergence_epsilon_spin.setValue(settings.get("convergence_epsilon", 0.00))
+                
+                # Возвращаем рабочую директорию (по умолчанию текущая директория)
+                return settings.get("working_directory", ".")
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            # Возвращаем текущую директорию по умолчанию
+            return "."
+
+    def _save_settings(self):
+        """Сохраняет все настройки в settings.json"""
+        settings = {
+            "threshold_root": round(self.threshold_root_spin.value(), 2),
+            "threshold_avg": round(self.threshold_avg_spin.value(), 2),
+            "max_iters": self.max_iters_spin.value(),
+            "convergence_epsilon": round(self.convergence_epsilon_spin.value(), 2),
+            "working_directory": self.working_directory
+        }
+        try:
+            with open("settings.json", "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print("Ошибка сохранения настроек:", e)
+            # можно QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить настройки:\n{str(e)}")
 
     # Заглушки для новых методов (реализуем позже)
     def form_associations(self):
@@ -352,16 +388,21 @@ class MainWindow(QMainWindow):
 
         # Диалог сохранения
         default_name = "Ассоциации_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M") + ".docx"
+        import os
+        tempfname = os.path.join(self._get_initial_dir(), default_name)
         fname, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранить отчёт по ассоциациям",
-            default_name,
+            "Сохранить отчёт по ассоциациям",     
+            tempfname,
             "Word документы (*.docx);;Все файлы (*.*)"
         )
         if not fname:
             return
         if not fname.lower().endswith('.docx'):
             fname += '.docx'
+
+        # Обновляем рабочую директорию на директорию сохраненного файла
+        self.working_directory = os.path.dirname(fname)
 
         # Создаём документ
         doc = Document()
@@ -520,7 +561,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Нет данных", "Сначала загрузите файл данных.")
             return
         
-        success = self.data.save_statistics_to_csv()
+        success = self.data.save_statistics_to_csv(working_directory=self.working_directory)
         if success:
             QMessageBox.information(self, "Успех", "Статистика характеристик сохранена в CSV-файл.")
         else:
@@ -611,11 +652,14 @@ class MainWindow(QMainWindow):
     def act_open(self):
         fname, _ = QFileDialog.getOpenFileName(
             self, "Открыть файл данных",
-            "",
+            self._get_initial_dir(),
             "Данные (*.elnm *.txt *.dat);;Все файлы (*.*)"
         )
         if not fname:
             return
+
+        # Обновляем рабочую директорию на директорию выбранного файла
+        self.working_directory = os.path.dirname(fname)
 
         self.stat_corr.clear()
         self.table_view.setModel(None)
@@ -632,7 +676,16 @@ class MainWindow(QMainWindow):
             for row_idx in range(self.data.get_count_record()):
                 for col_idx, col_name in enumerate(self.data.get_column_names()):
                     val = self.data.df.iloc[row_idx, col_idx]
-                    item = QStandardItem(f"{val:.4g}" if not pd.isna(val) else "—")
+                    if not pd.isna(val):
+                        try:
+                            # Проверяем, является ли значение числовым
+                            float_val = float(val)
+                            item = QStandardItem(f"{float_val:.4g}")
+                        except (ValueError, TypeError):
+                            # Если не число, используем строковое представление
+                            item = QStandardItem(str(val))
+                    else:
+                        item = QStandardItem("—")
                     item.setEditable(False)
                     model.setItem(row_idx, col_idx, item)
 
@@ -739,7 +792,7 @@ class MainWindow(QMainWindow):
 
         html_content = self._generate_old_report()
 
-        report_path = Path("mapcor_report.html")
+        report_path = Path(self.working_directory) / "mapcor_report.html"
         report_path.write_text(html_content, encoding="utf-8")
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path.absolute())))
@@ -751,7 +804,7 @@ class MainWindow(QMainWindow):
 
         html_content = self._generate_extended_report()
 
-        report_path = Path("mapcor_extended_report.html")
+        report_path = Path(self.working_directory) / "mapcor_extended_report.html"
         report_path.write_text(html_content, encoding="utf-8")
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path.absolute())))
@@ -790,15 +843,21 @@ class MainWindow(QMainWindow):
         ]
         existing_desired = [c for c in desired_columns if c in stats_df.columns]
         stats_df = stats_df[existing_desired].copy()
-
+        import os
+        tempfname = os.path.join(self._get_initial_dir(), "statistics.docx")
         # Диалог сохранения
         fname, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить в Word", "statistics.docx", "Word (*.docx)"
+            self, "Сохранить в Word",
+            tempfname,
+            "Word (*.docx)"
         )
         if not fname:
             return
         if not fname.lower().endswith('.docx'):
             fname += '.docx'
+
+        # Обновляем рабочую директорию на директорию сохраненного файла
+        self.working_directory = os.path.dirname(fname)
 
         try:
             doc = Document()
@@ -1576,11 +1635,14 @@ class MainWindow(QMainWindow):
         fname, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить таблицу результатов",
-            "results.txt",
+            os.path.join(self._get_initial_dir(), "results.txt"),
             "Текстовые файлы (*.txt);;Все файлы (*.*)"
         )
         if not fname:
             return
+
+        # Обновляем рабочую директорию на директорию сохраненного файла
+        self.working_directory = os.path.dirname(fname)
 
         # Добавляем расширение .txt, если пользователь его не указал
         if not fname.lower().endswith('.txt'):
